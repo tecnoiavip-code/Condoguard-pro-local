@@ -1,0 +1,1003 @@
+import { useState, useEffect } from 'react';
+import StandardPagination from '@/components/StandardPagination';
+import { exportToCSV } from '@/lib/export-csv';
+import { supabase } from '@/integrations/supabase/client';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { toast } from 'sonner';
+import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+interface Shift {
+  id: string;
+  team_members: string[];
+  shift_start: string;
+  shift_end: string | null;
+  shift_type: string;
+  notes: string | null;
+  created_at: string;
+}
+
+interface Incident {
+  id: string;
+  title: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  status: 'open' | 'in_progress' | 'resolved' | 'closed';
+  shift_id: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+interface PortariaEquipment {
+  id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+interface EquipmentCheck {
+  equipment_id: string;
+  status: string;
+  notes: string;
+}
+
+interface ShiftEquipmentCheck {
+  id: string;
+  shift_id: string;
+  equipment_id: string;
+  status: string;
+  notes: string | null;
+  checked_at: string;
+}
+
+export const Reports = () => {
+  const [activeTab, setActiveTab] = useState<'shifts' | 'incidents' | 'equipment'>('shifts');
+
+  // Shifts state
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [teamMembers, setTeamMembers] = useState('');
+  const [shiftNotes, setShiftNotes] = useState('');
+  const [shiftType, setShiftType] = useState<'diurno' | 'noturno'>('diurno');
+  const [currentShift, setCurrentShift] = useState<Shift | null>(null);
+  const [shiftSearch, setShiftSearch] = useState('');
+  const [shiftPage, setShiftPage] = useState(1);
+
+  // Equipment checklist state
+  const [equipmentChecks, setEquipmentChecks] = useState<EquipmentCheck[]>([]);
+  const [portariaEquipment, setPortariaEquipment] = useState<PortariaEquipment[]>([]);
+  const [currentShiftChecks, setCurrentShiftChecks] = useState<ShiftEquipmentCheck[]>([]);
+
+  // Equipment management state
+  const [isEquipmentDialogOpen, setIsEquipmentDialogOpen] = useState(false);
+  const [isChecklistDialogOpen, setIsChecklistDialogOpen] = useState(false);
+  const [equipmentFormData, setEquipmentFormData] = useState({ name: '', description: '' });
+  const [equipmentPage, setEquipmentPage] = useState(1);
+
+  // Incidents state
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [incidentTitle, setIncidentTitle] = useState('');
+  const [incidentDescription, setIncidentDescription] = useState('');
+  const [incidentSeverity, setIncidentSeverity] = useState<'low' | 'medium' | 'high' | 'critical'>('low');
+  const [incidentPage, setIncidentPage] = useState(1);
+
+  // View shift details
+  const [viewingShift, setViewingShift] = useState<Shift | null>(null);
+  const [viewingShiftChecks, setViewingShiftChecks] = useState<(ShiftEquipmentCheck & { equipment_name?: string })[]>([]);
+  const [viewingShiftIncidents, setViewingShiftIncidents] = useState<Incident[]>([]);
+
+  const ITEMS_PER_PAGE = 10;
+
+  useEffect(() => {
+    loadShifts();
+    loadIncidents();
+    loadPortariaEquipment();
+    checkCurrentShift();
+    autoDetectShiftType();
+  }, []);
+
+  const autoDetectShiftType = () => {
+    const now = new Date();
+    const hour = now.getHours();
+    setShiftType(hour >= 6 && hour < 18 ? 'diurno' : 'noturno');
+  };
+
+  const loadPortariaEquipment = async () => {
+    const { data, error } = await supabase
+      .from('portaria_equipment')
+      .select('*')
+      .eq('is_active', true)
+      .order('name');
+    if (error) {
+      console.error('Error loading equipment:', error);
+    } else {
+      setPortariaEquipment(data || []);
+      // Initialize checks for each equipment
+      setEquipmentChecks((data || []).map((eq: any) => ({
+        equipment_id: eq.id,
+        status: 'functional' as const,
+        notes: '',
+      })));
+    }
+  };
+
+  const loadAllPortariaEquipment = async () => {
+    const { data, error } = await supabase
+      .from('portaria_equipment')
+      .select('*')
+      .order('name');
+    if (!error) setPortariaEquipment(data || []);
+  };
+
+  const loadShifts = async () => {
+    const { data, error } = await supabase
+      .from('shifts')
+      .select('*')
+      .order('shift_start', { ascending: false });
+    if (!error) setShifts((data || []) as Shift[]);
+  };
+
+  const loadIncidents = async () => {
+    const { data, error } = await supabase
+      .from('incidents')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (!error) setIncidents((data || []) as Incident[]);
+  };
+
+  const checkCurrentShift = async () => {
+    const { data } = await supabase
+      .from('shifts')
+      .select('*')
+      .is('shift_end', null)
+      .order('shift_start', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data) {
+      setCurrentShift(data as Shift);
+      loadCurrentShiftChecks(data.id);
+    }
+  };
+
+  const loadCurrentShiftChecks = async (shiftId: string) => {
+    const { data } = await supabase
+      .from('shift_equipment_checks')
+      .select('*')
+      .eq('shift_id', shiftId);
+    if (data) setCurrentShiftChecks(data);
+  };
+
+  const handleStartShift = async () => {
+    if (!teamMembers.trim()) {
+      toast.error('Informe os membros da equipe');
+      return;
+    }
+
+    const members = teamMembers.split(',').map(m => m.trim()).filter(m => m);
+
+    const { data: shiftData, error } = await supabase
+      .from('shifts')
+      .insert({
+        team_members: members,
+        shift_start: new Date().toISOString(),
+        shift_type: shiftType,
+        notes: shiftNotes || null,
+      })
+      .select()
+      .single();
+
+    if (error || !shiftData) {
+      toast.error('Erro ao iniciar plantão');
+      return;
+    }
+
+    // Save equipment checklist - notes contains the "situação" written by user
+    const checksToInsert = equipmentChecks
+      .filter(c => portariaEquipment.find(e => e.id === c.equipment_id) && c.notes.trim())
+      .map(c => ({
+        shift_id: shiftData.id,
+        equipment_id: c.equipment_id,
+        status: c.status || 'functional',
+        notes: c.notes || null,
+      }));
+
+    if (checksToInsert.length > 0) {
+      await supabase.from('shift_equipment_checks').insert(checksToInsert);
+    }
+
+    toast.success('Plantão iniciado com sucesso');
+    setTeamMembers('');
+    setShiftNotes('');
+    loadShifts();
+    checkCurrentShift();
+    loadPortariaEquipment();
+  };
+
+  const handleEndShift = async () => {
+    if (!currentShift) return;
+    const { error } = await supabase
+      .from('shifts')
+      .update({ shift_end: new Date().toISOString() })
+      .eq('id', currentShift.id);
+    if (error) {
+      toast.error('Erro ao encerrar plantão');
+    } else {
+      toast.success('Plantão encerrado com sucesso');
+      setCurrentShift(null);
+      setCurrentShiftChecks([]);
+      loadShifts();
+    }
+  };
+
+  const handleCreateIncident = async () => {
+    if (!incidentTitle.trim() || !incidentDescription.trim()) {
+      toast.error('Preencha título e descrição');
+      return;
+    }
+    const { error } = await supabase.from('incidents').insert({
+      title: incidentTitle,
+      description: incidentDescription,
+      severity: incidentSeverity,
+      status: 'open',
+      shift_id: currentShift?.id || null,
+    });
+    if (error) {
+      toast.error('Erro ao registrar ocorrência');
+    } else {
+      toast.success('Ocorrência registrada');
+      setIncidentTitle('');
+      setIncidentDescription('');
+      setIncidentSeverity('low');
+      loadIncidents();
+    }
+  };
+
+  const handleUpdateIncidentStatus = async (id: string, newStatus: string) => {
+    const updates: any = { status: newStatus };
+    if (newStatus === 'resolved' || newStatus === 'closed') {
+      updates.resolved_at = new Date().toISOString();
+    }
+    const { error } = await supabase.from('incidents').update(updates).eq('id', id);
+    if (error) {
+      toast.error('Erro ao atualizar ocorrência');
+    } else {
+      toast.success('Ocorrência atualizada');
+      loadIncidents();
+    }
+  };
+
+  const handleCreateEquipment = async () => {
+    if (!equipmentFormData.name.trim()) {
+      toast.error('Informe o nome do equipamento');
+      return;
+    }
+    const { error } = await supabase.from('portaria_equipment').insert({
+      name: equipmentFormData.name.toUpperCase(),
+      description: equipmentFormData.description || null,
+    });
+    if (error) {
+      toast.error('Erro ao cadastrar equipamento');
+    } else {
+      toast.success('Equipamento cadastrado');
+      setEquipmentFormData({ name: '', description: '' });
+      setIsEquipmentDialogOpen(false);
+      loadPortariaEquipment();
+      loadAllPortariaEquipment();
+    }
+  };
+
+  const handleToggleEquipment = async (id: string, isActive: boolean) => {
+    const { error } = await supabase
+      .from('portaria_equipment')
+      .update({ is_active: !isActive })
+      .eq('id', id);
+    if (!error) {
+      toast.success(isActive ? 'Equipamento desativado' : 'Equipamento ativado');
+      loadPortariaEquipment();
+      loadAllPortariaEquipment();
+    }
+  };
+
+  const handleViewShiftDetails = async (shift: Shift) => {
+    setViewingShift(shift);
+    // Load checks for this shift with equipment names
+    const { data: checks } = await supabase
+      .from('shift_equipment_checks')
+      .select('*, portaria_equipment(name, description)')
+      .eq('shift_id', shift.id);
+
+    const enrichedChecks = (checks || []).map((c: any) => ({
+      ...c,
+      equipment_name: c.portaria_equipment?.name || 'Equipamento removido',
+      equipment_description: c.portaria_equipment?.description || '',
+    }));
+    setViewingShiftChecks(enrichedChecks);
+
+    // Load incidents for this shift
+    const { data: shiftIncidents } = await supabase
+      .from('incidents')
+      .select('*')
+      .eq('shift_id', shift.id)
+      .order('created_at', { ascending: false });
+    setViewingShiftIncidents((shiftIncidents || []) as Incident[]);
+  };
+
+  const handleEquipmentCheckChange = (equipmentId: string, field: 'status' | 'notes', value: string) => {
+    setEquipmentChecks(prev => prev.map(c =>
+      c.equipment_id === equipmentId ? { ...c, [field]: value } : c
+    ));
+  };
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': case 'high': return 'destructive';
+      case 'medium': return 'default';
+      default: return 'secondary';
+    }
+  };
+
+  const getSeverityLabel = (s: string) => {
+    const map: Record<string, string> = { critical: 'Crítica', high: 'Alta', medium: 'Média', low: 'Baixa' };
+    return map[s] || s;
+  };
+
+  const getStatusLabel = (s: string) => {
+    const map: Record<string, string> = { open: 'Aberta', in_progress: 'Em Andamento', resolved: 'Resolvida', closed: 'Fechada' };
+    return map[s] || s;
+  };
+
+  const getEquipStatusIcon = (status: string) => {
+    if (status === 'functional') return <CheckCircle className="h-4 w-4 text-green-500" />;
+    if (status === 'defective') return <XCircle className="h-4 w-4 text-red-500" />;
+    return <AlertCircle className="h-4 w-4 text-yellow-500" />;
+  };
+
+  const getEquipStatusLabel = (s: string) => {
+    const map: Record<string, string> = { functional: 'Funcionando', defective: 'Defeituoso', maintenance: 'Manutenção' };
+    return map[s] || s;
+  };
+
+  const exportShiftsToPDF = () => {
+    const doc = new jsPDF();
+    doc.text('Histórico de Plantões', 14, 15);
+    const tableData = filteredShifts.map(shift => [
+      shift.shift_type === 'diurno' ? 'Diurno' : 'Noturno',
+      format(new Date(shift.shift_start), "dd/MM/yyyy HH:mm", { locale: ptBR }),
+      shift.shift_end ? format(new Date(shift.shift_end), "dd/MM/yyyy HH:mm", { locale: ptBR }) : 'Em andamento',
+      shift.team_members.join(', '),
+      shift.notes || '-',
+    ]);
+    autoTable(doc, {
+      head: [['Tipo', 'Início', 'Fim', 'Equipe', 'Observações']],
+      body: tableData,
+      startY: 22,
+    });
+    doc.save('plantoes.pdf');
+    toast.success('PDF gerado com sucesso');
+  };
+
+  const exportShiftsToCSV = () => {
+    const headers = ['Tipo', 'Início', 'Fim', 'Equipe', 'Observações'];
+    const rows = filteredShifts.map(shift => [
+      shift.shift_type === 'diurno' ? 'Diurno' : 'Noturno',
+      format(new Date(shift.shift_start), 'dd/MM/yyyy HH:mm', { locale: ptBR }),
+      shift.shift_end ? format(new Date(shift.shift_end), 'dd/MM/yyyy HH:mm', { locale: ptBR }) : 'Em andamento',
+      shift.team_members.join(', '),
+      shift.notes || '-',
+    ]);
+    exportToCSV('plantoes', headers, rows);
+    toast.success('CSV gerado com sucesso');
+  };
+
+  // Load all equipment for management tab
+  useEffect(() => {
+    if (activeTab === 'equipment') loadAllPortariaEquipment();
+  }, [activeTab]);
+
+  const filteredShifts = shifts.filter(shift =>
+    shift.team_members.some(m => m.toLowerCase().includes(shiftSearch.toLowerCase())) ||
+    (shift.notes && shift.notes.toLowerCase().includes(shiftSearch.toLowerCase())) ||
+    (shift.shift_type && shift.shift_type.toLowerCase().includes(shiftSearch.toLowerCase()))
+  );
+  const totalShiftPages = Math.max(1, Math.ceil(filteredShifts.length / ITEMS_PER_PAGE));
+  const correctedShiftPage = Math.min(shiftPage, totalShiftPages);
+  if (correctedShiftPage !== shiftPage) setShiftPage(correctedShiftPage);
+  const paginatedShifts = filteredShifts.slice((correctedShiftPage - 1) * ITEMS_PER_PAGE, correctedShiftPage * ITEMS_PER_PAGE);
+
+  const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id === currentShift.id);
+
+  const paginatedIncidents = incidents.slice((incidentPage - 1) * ITEMS_PER_PAGE, incidentPage * ITEMS_PER_PAGE);
+  const totalIncidentPages = Math.ceil(incidents.length / ITEMS_PER_PAGE);
+
+  const paginatedEquipment = portariaEquipment.slice((equipmentPage - 1) * ITEMS_PER_PAGE, equipmentPage * ITEMS_PER_PAGE);
+  const totalEquipmentPages = Math.ceil(portariaEquipment.length / ITEMS_PER_PAGE);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold">Relatórios</h1>
+      </div>
+
+      <div className="flex gap-2 border-b flex-wrap">
+        <Button variant={activeTab === 'shifts' ? 'default' : 'ghost'} onClick={() => setActiveTab('shifts')}>
+          <Users className="mr-2 h-4 w-4" />
+          Plantões
+        </Button>
+        <Button variant={activeTab === 'incidents' ? 'default' : 'ghost'} onClick={() => setActiveTab('incidents')}>
+          <AlertTriangle className="mr-2 h-4 w-4" />
+          Ocorrências
+        </Button>
+        <Button variant={activeTab === 'equipment' ? 'default' : 'ghost'} onClick={() => setActiveTab('equipment')}>
+          <Wrench className="mr-2 h-4 w-4" />
+          Equipamentos
+        </Button>
+      </div>
+
+      {/* ========== PLANTÕES ========== */}
+      {activeTab === 'shifts' && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Gerenciar Plantão</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {currentShift ? (
+                <div className="space-y-4">
+                  <div className="p-4 border rounded-lg bg-card">
+                    <div className="flex items-center gap-2 mb-2">
+                      {currentShift.shift_type === 'diurno'
+                        ? <Sun className="h-5 w-5 text-yellow-500" />
+                        : <Moon className="h-5 w-5 text-blue-400" />}
+                      <h3 className="font-semibold">
+                        Plantão {currentShift.shift_type === 'diurno' ? 'Diurno (06:00-18:00)' : 'Noturno (18:00-06:00)'}
+                      </h3>
+                      <Badge variant={currentShift.shift_type === 'diurno' ? 'default' : 'secondary'}>
+                        Em andamento
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground mb-2">
+                      Iniciado: {format(new Date(currentShift.shift_start), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                    </p>
+                    <p className="text-sm"><strong>Equipe:</strong> {currentShift.team_members.join(', ')}</p>
+                    {currentShift.notes && <p className="text-sm mt-2"><strong>Observações:</strong> {currentShift.notes}</p>}
+                  </div>
+
+                  {/* Checklist do plantão atual */}
+                  {currentShiftChecks.length > 0 && (
+                    <div className="p-4 border rounded-lg">
+                      <h4 className="font-semibold mb-3">Checklist de Equipamentos</h4>
+                      <div className="space-y-2">
+                        {currentShiftChecks.map(check => {
+                          const eq = portariaEquipment.find(e => e.id === check.equipment_id);
+                          return (
+                            <div key={check.id} className="text-sm border-b pb-2 last:border-b-0 last:pb-0">
+                              <span className="font-medium">{eq?.name || 'Equipamento'}</span>
+                              {check.notes && <p className="text-muted-foreground text-xs mt-1">Situação: {check.notes}</p>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Ocorrências do plantão atual */}
+                  {currentShiftIncidents.length > 0 && (
+                    <div className="p-4 border rounded-lg">
+                      <h4 className="font-semibold mb-3">Ocorrências deste Plantão ({currentShiftIncidents.length})</h4>
+                      <div className="space-y-2">
+                        {currentShiftIncidents.map(inc => (
+                          <div key={inc.id} className="flex items-center justify-between text-sm border-b pb-2">
+                            <div>
+                              <span className="font-medium">{inc.title}</span>
+                              <span className="text-muted-foreground ml-2">
+                                {format(new Date(inc.created_at), "HH:mm", { locale: ptBR })}
+                              </span>
+                            </div>
+                            <div className="flex gap-1">
+                              <Badge variant={getSeverityColor(inc.severity)} className="text-xs">
+                                {getSeverityLabel(inc.severity)}
+                              </Badge>
+                              <Badge variant="outline" className="text-xs">
+                                {getStatusLabel(inc.status)}
+                              </Badge>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 flex-wrap">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        // Initialize checks from current shift checks or fresh
+                        setEquipmentChecks(portariaEquipment.filter(e => e.is_active).map(eq => {
+                          const existing = currentShiftChecks.find(c => c.equipment_id === eq.id);
+                          return {
+                            equipment_id: eq.id,
+                            status: existing?.status || 'functional',
+                            notes: existing?.notes || '',
+                          };
+                        }));
+                        setIsChecklistDialogOpen(true);
+                      }}
+                    >
+                      <ClipboardList className="mr-2 h-4 w-4" />
+                      Checklist de Equipamentos
+                    </Button>
+                    <Button onClick={() => setActiveTab('incidents')} variant="outline">
+                      <AlertTriangle className="mr-2 h-4 w-4" />
+                      Registrar Ocorrência
+                    </Button>
+                    <Button onClick={handleEndShift} variant="destructive">
+                      Encerrar Plantão
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Tipo de plantão */}
+                  <div>
+                    <Label>Tipo de Plantão</Label>
+                    <div className="flex gap-3 mt-2">
+                      <Button
+                        type="button"
+                        variant={shiftType === 'diurno' ? 'default' : 'outline'}
+                        onClick={() => setShiftType('diurno')}
+                        className="flex-1"
+                      >
+                        <Sun className="mr-2 h-4 w-4" />
+                        Diurno (06:00 - 18:00)
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={shiftType === 'noturno' ? 'default' : 'outline'}
+                        onClick={() => setShiftType('noturno')}
+                        className="flex-1"
+                      >
+                        <Moon className="mr-2 h-4 w-4" />
+                        Noturno (18:00 - 06:00)
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label>Membros da Equipe (separados por vírgula)</Label>
+                    <Input value={teamMembers} onChange={e => setTeamMembers(e.target.value)} placeholder="João Silva, Maria Santos" />
+                  </div>
+
+                  {/* Botão para abrir checklist de equipamentos */}
+                  {portariaEquipment.filter(e => e.is_active).length > 0 ? (
+                    <div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => setIsChecklistDialogOpen(true)}
+                      >
+                        <ClipboardList className="mr-2 h-4 w-4" />
+                        Checklist de Equipamentos
+                        {equipmentChecks.some(c => c.notes.trim()) && (
+                          <Badge variant="default" className="ml-2">{equipmentChecks.filter(c => c.notes.trim()).length} preenchido(s)</Badge>
+                        )}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="p-4 border rounded-lg text-center text-muted-foreground">
+                      <Wrench className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">Nenhum equipamento cadastrado.</p>
+                      <Button variant="link" size="sm" onClick={() => setActiveTab('equipment')}>
+                        Cadastrar equipamentos
+                      </Button>
+                    </div>
+                  )}
+
+                  <div>
+                    <Label>Observações</Label>
+                    <Textarea value={shiftNotes} onChange={e => setShiftNotes(e.target.value)} placeholder="Observações sobre o plantão..." />
+                  </div>
+
+                  <Button onClick={handleStartShift}>
+                    <ClipboardList className="mr-2 h-4 w-4" />
+                    Iniciar Plantão
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Histórico */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-4">
+                <CardTitle>Histórico de Plantões</CardTitle>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={exportShiftsToPDF}>
+                    <Download className="h-4 w-4 mr-2" />PDF
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={exportShiftsToCSV}>
+                    <FileSpreadsheet className="h-4 w-4 mr-2" />CSV
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="mb-4">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input placeholder="Buscar por equipe, observações ou tipo..." value={shiftSearch} onChange={e => { setShiftSearch(e.target.value); setShiftPage(1); }} className="pl-10" />
+                </div>
+              </div>
+              <div className="space-y-4">
+                {paginatedShifts.map(shift => (
+                  <div key={shift.id} className="border rounded-lg p-4 cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => handleViewShiftDetails(shift)}>
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex items-center gap-2">
+                        {shift.shift_type === 'diurno'
+                          ? <Sun className="h-4 w-4 text-yellow-500" />
+                          : <Moon className="h-4 w-4 text-blue-400" />}
+                        <div>
+                          <p className="text-sm text-muted-foreground">
+                            {format(new Date(shift.shift_start), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                            {shift.shift_end && <> - {format(new Date(shift.shift_end), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}</>}
+                          </p>
+                          <p className="font-medium">Equipe: {shift.team_members.join(', ')}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <Badge variant={shift.shift_type === 'diurno' ? 'default' : 'secondary'}>
+                          {shift.shift_type === 'diurno' ? 'Diurno' : 'Noturno'}
+                        </Badge>
+                        {!shift.shift_end && <Badge variant="default">Em andamento</Badge>}
+                      </div>
+                    </div>
+                    {shift.notes && <p className="text-sm text-muted-foreground mt-2">{shift.notes}</p>}
+                  </div>
+                ))}
+                {filteredShifts.length === 0 && <p className="text-center text-muted-foreground py-8">Nenhum plantão encontrado</p>}
+              </div>
+              <StandardPagination currentPage={shiftPage} totalPages={totalShiftPages} onPageChange={setShiftPage} className="mt-4" />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ========== OCORRÊNCIAS ========== */}
+      {activeTab === 'incidents' && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Registrar Ocorrência</CardTitle>
+              {currentShift && (
+                <p className="text-sm text-muted-foreground">
+                  Vinculada ao plantão {currentShift.shift_type === 'diurno' ? 'diurno' : 'noturno'} atual
+                </p>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <Label>Título</Label>
+                <Input value={incidentTitle} onChange={e => setIncidentTitle(e.target.value)} placeholder="Título da ocorrência" />
+              </div>
+              <div>
+                <Label>Descrição</Label>
+                <Textarea value={incidentDescription} onChange={e => setIncidentDescription(e.target.value)} placeholder="Descreva a ocorrência..." rows={4} />
+              </div>
+              <div>
+                <Label>Gravidade</Label>
+                <Select value={incidentSeverity} onValueChange={(v: any) => setIncidentSeverity(v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Baixa</SelectItem>
+                    <SelectItem value="medium">Média</SelectItem>
+                    <SelectItem value="high">Alta</SelectItem>
+                    <SelectItem value="critical">Crítica</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button onClick={handleCreateIncident}>
+                <AlertTriangle className="mr-2 h-4 w-4" />
+                Registrar Ocorrência
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Lista de Ocorrências</CardTitle></CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {paginatedIncidents.map(incident => (
+                  <div key={incident.id} className="border rounded-lg p-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex-1">
+                        <h3 className="font-semibold">{incident.title}</h3>
+                        <p className="text-sm text-muted-foreground mt-1">{incident.description}</p>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          {format(new Date(incident.created_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Badge variant={getSeverityColor(incident.severity)}>{getSeverityLabel(incident.severity)}</Badge>
+                        <Badge variant="outline">{getStatusLabel(incident.status)}</Badge>
+                      </div>
+                    </div>
+                    {incident.status !== 'closed' && (
+                      <div className="flex gap-2 mt-3">
+                        {incident.status === 'open' && <Button size="sm" variant="outline" onClick={() => handleUpdateIncidentStatus(incident.id, 'in_progress')}>Iniciar</Button>}
+                        {incident.status === 'in_progress' && <Button size="sm" variant="outline" onClick={() => handleUpdateIncidentStatus(incident.id, 'resolved')}>Resolver</Button>}
+                        <Button size="sm" variant="outline" onClick={() => handleUpdateIncidentStatus(incident.id, 'closed')}>Fechar</Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <StandardPagination currentPage={incidentPage} totalPages={totalIncidentPages} onPageChange={setIncidentPage} className="mt-4" />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ========== EQUIPAMENTOS ========== */}
+      {activeTab === 'equipment' && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Wrench className="h-5 w-5" />
+                  Equipamentos da Portaria
+                </CardTitle>
+                <Button onClick={() => setIsEquipmentDialogOpen(true)} size="sm">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Cadastrar Equipamento
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {paginatedEquipment.map(eq => (
+                  <div key={eq.id} className="border rounded-lg p-4 flex justify-between items-center">
+                    <div>
+                      <h3 className="font-semibold">{eq.name}</h3>
+                      {eq.description && <p className="text-sm text-muted-foreground">{eq.description}</p>}
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Cadastrado em {format(new Date(eq.created_at), "dd/MM/yyyy", { locale: ptBR })}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={eq.is_active ? 'default' : 'secondary'}>
+                        {eq.is_active ? 'Ativo' : 'Inativo'}
+                      </Badge>
+                      <Button variant="outline" size="sm" onClick={() => handleToggleEquipment(eq.id, eq.is_active)}>
+                        {eq.is_active ? 'Desativar' : 'Ativar'}
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {portariaEquipment.length === 0 && (
+                  <p className="text-center text-muted-foreground py-8">Nenhum equipamento cadastrado</p>
+                )}
+              </div>
+              <StandardPagination currentPage={equipmentPage} totalPages={totalEquipmentPages} onPageChange={setEquipmentPage} className="mt-4" />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Dialog: Cadastrar Equipamento */}
+      <Dialog open={isEquipmentDialogOpen} onOpenChange={setIsEquipmentDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cadastrar Equipamento da Portaria</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label>Nome do Equipamento *</Label>
+              <Input value={equipmentFormData.name} onChange={e => setEquipmentFormData({ ...equipmentFormData, name: e.target.value })} placeholder="Ex: Rádio HT, Telefone, Monitor" />
+            </div>
+            <div>
+              <Label>Descrição</Label>
+              <Input value={equipmentFormData.description} onChange={e => setEquipmentFormData({ ...equipmentFormData, description: e.target.value })} placeholder="Ex: Marca/Modelo, localização" />
+            </div>
+            <Button onClick={handleCreateEquipment} className="w-full">
+              <Plus className="h-4 w-4 mr-2" />
+              Cadastrar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Detalhes do Plantão */}
+      <Dialog open={!!viewingShift} onOpenChange={() => setViewingShift(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {viewingShift?.shift_type === 'diurno'
+                ? <Sun className="h-5 w-5 text-yellow-500" />
+                : <Moon className="h-5 w-5 text-blue-400" />}
+              Plantão {viewingShift?.shift_type === 'diurno' ? 'Diurno (06:00-18:00)' : 'Noturno (18:00-06:00)'}
+            </DialogTitle>
+          </DialogHeader>
+          {viewingShift && (
+            <div className="space-y-5 py-2">
+              {/* Informações gerais */}
+              <div className="border rounded-lg p-4 space-y-2">
+                <h4 className="font-semibold text-sm flex items-center gap-2">
+                  <ClipboardList className="h-4 w-4" /> Informações do Plantão
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">Tipo:</span>{' '}
+                    <Badge variant={viewingShift.shift_type === 'diurno' ? 'default' : 'secondary'}>
+                      {viewingShift.shift_type === 'diurno' ? 'Diurno' : 'Noturno'}
+                    </Badge>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Status:</span>{' '}
+                    <Badge variant={viewingShift.shift_end ? 'secondary' : 'default'}>
+                      {viewingShift.shift_end ? 'Finalizado' : 'Em andamento'}
+                    </Badge>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Início:</span>{' '}
+                    {format(new Date(viewingShift.shift_start), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Fim:</span>{' '}
+                    {viewingShift.shift_end
+                      ? format(new Date(viewingShift.shift_end), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })
+                      : '—'}
+                  </div>
+                  {viewingShift.shift_end && (
+                    <div className="sm:col-span-2">
+                      <span className="text-muted-foreground">Duração:</span>{' '}
+                      {(() => {
+                        const ms = new Date(viewingShift.shift_end).getTime() - new Date(viewingShift.shift_start).getTime();
+                        const hours = Math.floor(ms / 3600000);
+                        const mins = Math.floor((ms % 3600000) / 60000);
+                        return `${hours}h ${mins}min`;
+                      })()}
+                    </div>
+                  )}
+                </div>
+                <div className="text-sm mt-2">
+                  <span className="text-muted-foreground">Equipe:</span>{' '}
+                  <span className="font-medium">{viewingShift.team_members.join(', ')}</span>
+                </div>
+                {viewingShift.notes && (
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">Observações:</span>{' '}
+                    <span>{viewingShift.notes}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Checklist de equipamentos */}
+              <div className="border rounded-lg p-4">
+                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                  <Wrench className="h-4 w-4" /> Checklist de Equipamentos
+                  {viewingShiftChecks.length > 0 && (
+                    <Badge variant="outline" className="text-xs ml-1">
+                      {viewingShiftChecks.length} item(ns)
+                    </Badge>
+                  )}
+                </h4>
+                {viewingShiftChecks.length > 0 ? (
+                  <div className="space-y-2">
+                    {viewingShiftChecks.map(c => (
+                      <div key={c.id} className="text-sm border-b pb-2 last:border-b-0 last:pb-0">
+                        <span className="font-medium">{c.equipment_name}</span>
+                        {c.notes && <p className="text-muted-foreground text-xs mt-1">Situação: {c.notes}</p>}
+                        {!c.notes && <p className="text-muted-foreground text-xs mt-1 italic">Sem descrição</p>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Nenhum equipamento registrado neste plantão.</p>
+                )}
+              </div>
+
+              {/* Ocorrências */}
+              <div className="border rounded-lg p-4">
+                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4" /> Ocorrências
+                  <Badge variant="outline" className="text-xs ml-1">{viewingShiftIncidents.length}</Badge>
+                </h4>
+                {viewingShiftIncidents.length > 0 ? (
+                  <div className="space-y-3">
+                    {viewingShiftIncidents.map(inc => (
+                      <div key={inc.id} className="border rounded-lg p-3 text-sm">
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="font-medium">{inc.title}</span>
+                          <div className="flex gap-1">
+                            <Badge variant={getSeverityColor(inc.severity)} className="text-xs">{getSeverityLabel(inc.severity)}</Badge>
+                            <Badge variant="outline" className="text-xs">{getStatusLabel(inc.status)}</Badge>
+                          </div>
+                        </div>
+                        <p className="text-muted-foreground text-xs">{inc.description}</p>
+                        <div className="flex gap-3 text-xs text-muted-foreground mt-2">
+                          <span>Registrada: {format(new Date(inc.created_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}</span>
+                          {inc.resolved_at && <span>Resolvida: {format(new Date(inc.resolved_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Nenhuma ocorrência neste plantão.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog Checklist de Equipamentos */}
+      <Dialog open={isChecklistDialogOpen} onOpenChange={setIsChecklistDialogOpen}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ClipboardList className="h-5 w-5" />
+              Checklist de Equipamentos
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {portariaEquipment.filter(e => e.is_active).map(eq => {
+              const check = equipmentChecks.find(c => c.equipment_id === eq.id);
+              return (
+                <div key={eq.id} className="space-y-1 border-b pb-3 last:border-b-0 last:pb-0">
+                  <Label className="font-semibold">{eq.name}</Label>
+                  {eq.description && <p className="text-xs text-muted-foreground">{eq.description}</p>}
+                  <Textarea
+                    value={check?.notes || ''}
+                    onChange={e => handleEquipmentCheckChange(eq.id, 'notes', e.target.value)}
+                    placeholder="Descreva a situação do equipamento..."
+                    className="text-sm min-h-[60px]"
+                  />
+                </div>
+              );
+            })}
+            {portariaEquipment.filter(e => e.is_active).length === 0 && (
+              <p className="text-center text-muted-foreground py-4">Nenhum equipamento ativo cadastrado.</p>
+            )}
+            <Button className="w-full" onClick={async () => {
+              // If there's an active shift, save/update checks to the database
+              if (currentShift) {
+                const checksToSave = equipmentChecks
+                  .filter(c => c.notes.trim())
+                  .map(c => ({
+                    shift_id: currentShift.id,
+                    equipment_id: c.equipment_id,
+                    status: c.status || 'functional',
+                    notes: c.notes || null,
+                  }));
+
+                // Delete existing checks for this shift and re-insert
+                await supabase.from('shift_equipment_checks').delete().eq('shift_id', currentShift.id);
+                if (checksToSave.length > 0) {
+                  await supabase.from('shift_equipment_checks').insert(checksToSave);
+                }
+                toast.success('Checklist atualizado');
+                loadCurrentShiftChecks(currentShift.id);
+              }
+              setIsChecklistDialogOpen(false);
+            }}>
+              Confirmar Checklist
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
