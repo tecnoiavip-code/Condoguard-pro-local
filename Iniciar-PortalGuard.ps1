@@ -6,6 +6,36 @@ $root = $PSScriptRoot
 Set-Location $root
 
 $port = 8080
+$logFile = Join-Path $root 'data\portalguard-launcher.log'
+
+# Log simples em arquivo: como a janela do launcher pode ficar oculta, o log
+# garante um historico do inicio, da porta e de qualquer erro.
+function Write-Log {
+    param([string]$Message)
+    try {
+        $dir = Split-Path -Parent $logFile
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        }
+        Add-Content -LiteralPath $logFile -Value ('{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message) -Encoding UTF8
+    } catch {
+        # O log nunca deve interromper o inicio do programa
+    }
+}
+
+# Mostra o erro em caixa de dialogo, pois a janela do launcher pode estar oculta
+# (evita deixar o script travado esperando um ENTER invisivel).
+function Show-Erro {
+    param([string]$Titulo, [string]$Mensagem)
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [System.Windows.Forms.MessageBox]::Show($Mensagem, $Titulo, 'OK', 'Error') | Out-Null
+    } catch {
+        Write-Host $Mensagem -ForegroundColor Red
+    }
+}
+
+Write-Log "Iniciando PortalGuard local (porta $port)."
 
 # Detecta o IP da maquina na rede local (interface da rota padrao), com
 # fallback para 127.0.0.1. O PortalGuard e aberto nesse IP para que os
@@ -49,12 +79,15 @@ Write-Host ''
 # 1. Garante o build do frontend (na primeira vez)
 if (-not (Test-Path (Join-Path $root 'dist\index.html'))) {
     Write-Host 'Primeira execucao: compilando o programa (pode levar ~1 min)...' -ForegroundColor Yellow
+    Write-Log 'Primeira execucao: compilando o frontend (npm run build).'
     & npm run build
     if ($LASTEXITCODE -ne 0) {
         Write-Host 'Falha na compilacao do programa.' -ForegroundColor Red
-        Read-Host 'Pressione ENTER para sair'
+        Write-Log 'ERRO: falha na compilacao do frontend (npm run build).'
+        Show-Erro 'PortalGuard local' 'Falha na compilacao do programa. Veja o log em data\portalguard-launcher.log.'
         exit 1
     }
+    Write-Log 'Build do frontend concluido.'
 }
 
 # 2. Verifica se o servidor ja esta rodando
@@ -78,11 +111,14 @@ if (-not $alreadyUp) {
     if (-not $ready) {
         Write-Host 'O servidor nao respondeu. Verifique se a porta 8080 esta em uso.' -ForegroundColor Red
         if (-not $nodeProc.HasExited) { Stop-Process -Id $nodeProc.Id -Force }
-        Read-Host 'Pressione ENTER para sair'
+        Write-Log "ERRO: o servidor nao respondeu na porta $port (porta em uso?)."
+        Show-Erro 'PortalGuard local' "O servidor nao respondeu. Verifique se a porta $port esta em uso. Veja o log em data\portalguard-launcher.log."
         exit 1
     }
+    Write-Log "Servidor no ar em $url (PID $($nodeProc.Id))."
     Write-Host "Servidor no ar em $url" -ForegroundColor Green
 } else {
+    Write-Log "Servidor ja estava rodando em $url."
     Write-Host "Servidor ja estava rodando em $url" -ForegroundColor Green
 }
 
@@ -112,16 +148,19 @@ Write-Host ''
 if ($browserProc -and -not $browserProc.HasExited) {
     try { $browserProc.WaitForExit() } catch { }
 } else {
-    # Sem Edge/Chrome: usa o navegador padrao e aguarda o usuario encerrar
-    Read-Host 'Para encerrar o servidor, pressione ENTER aqui'
+    # Sem Edge/Chrome: usa o navegador padrao. Como a janela pode estar oculta,
+    # encerra pelo proprio processo do servidor em vez de esperar um ENTER invisivel.
+    Write-Log 'Sem Chrome/Edge detectado: encerrando quando o servidor for finalizado.'
 }
 
 # 5. Encerra o servidor (somente se foi iniciado por este script)
 if ($serverStartedByUs -and $nodeProc -and -not $nodeProc.HasExited) {
     Write-Host 'Encerrando o servidor...'
+    Write-Log 'Janela do PortalGuard fechada: encerrando o servidor.'
     try { Stop-Process -Id $nodeProc.Id -Force } catch { }
     Start-Sleep -Milliseconds 500
 }
 
 Write-Host 'Programa encerrado. Pode fechar esta janela.' -ForegroundColor Yellow
+Write-Log 'PortalGuard local encerrado.'
 Start-Sleep -Seconds 2
