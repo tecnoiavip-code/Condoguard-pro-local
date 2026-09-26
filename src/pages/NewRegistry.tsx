@@ -6,8 +6,9 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { LogIn, LogOut, Camera, Upload, X, Plus, Pencil, Trash2, Search, Download, ShieldBan, ShieldCheck, Ban, AlertTriangle, FileSpreadsheet, ScanFace, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { LogIn, LogOut, Camera, Upload, X, Plus, Pencil, Trash2, Search, Download, ShieldBan, ShieldCheck, Ban, AlertTriangle, FileSpreadsheet, ScanFace, Loader2, Wifi, WifiOff, ChevronDown } from 'lucide-react';
 import { DeviceCaptureStatus } from '@/components/DeviceCaptureStatus';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AccessEntry, Resident, Device } from '@/types';
 import { useAccessEntries } from '@/hooks/useAccessEntries';
 import { useResidents } from '@/hooks/useResidents';
@@ -722,17 +723,40 @@ export const NewRegistry = () => {
                             {entry.vehicleModel && <p className="text-xs">{entry.vehicleModel}</p>}
                           </div> : '-'}
                       </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); handleEdit(entry); }} className="h-8 w-8" title="Editar">
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); handleBlockVisitor(entry); }} className="h-8 w-8 text-destructive hover:text-destructive" title="Bloquear">
-                            <Ban className="h-4 w-4" />
-                          </Button>
-                          <Button size="icon" variant="ghost" onClick={(e) => { e.stopPropagation(); handleDelete(entry.id); }} className="h-8 w-8 text-destructive hover:text-destructive" title="Excluir">
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                      <TableCell className="text-right whitespace-nowrap">
+                        <div className="flex justify-end items-center gap-1">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                size="sm"
+                                onClick={(e) => e.stopPropagation()}
+                                className="h-8 bg-success text-success-foreground hover:bg-success/90"
+                              >
+                                Ações
+                                <ChevronDown className="h-4 w-4 ml-1" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                              <DropdownMenuItem onSelect={() => handleEdit(entry)}>
+                                <Pencil className="h-4 w-4 mr-2" />
+                                Editar
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onSelect={() => handleBlockVisitor(entry)}
+                                className="text-destructive focus:text-destructive"
+                              >
+                                <Ban className="h-4 w-4 mr-2" />
+                                Bloquear
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onSelect={() => handleDelete(entry.id)}
+                                className="text-destructive focus:text-destructive"
+                              >
+                                <Trash2 className="h-4 w-4 mr-2" />
+                                Excluir
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                           <Button size="sm" onClick={(e) => { e.stopPropagation(); handleExit(entry.id); }} className="h-8">
                             <LogOut className="h-4 w-4 mr-1" />
                             Saída
