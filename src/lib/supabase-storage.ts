@@ -23,7 +23,7 @@ export const supabaseStorage = {
   async getResidents(includePhotos = false): Promise<Resident[] | null> {
     const { data, error } = await supabase
       .from('residents')
-      .select('id, name, cpf, apartment, phone, email, photo_url, vehicle_plate, vehicle_model, vehicle_color, vehicle_tag, created_at')
+      .select('id, name, cpf, apartment, phone, email, photo_url, vehicle_plate, vehicle_model, vehicle_color, vehicle_tag, contract_type, contract_end_date, created_at')
       .order('created_at', { ascending: false });
     
     if (error) {
@@ -43,6 +43,8 @@ export const supabaseStorage = {
       vehicleModel: r.vehicle_model || '',
       vehicleColor: r.vehicle_color || '',
       vehicleTag: r.vehicle_tag || '',
+      contractType: r.contract_type || '',
+      contractEndDate: r.contract_end_date || '',
       createdAt: r.created_at,
     }));
 
@@ -222,6 +224,8 @@ export const supabaseStorage = {
       vehicle_model: up(resident.vehicleModel) || null,
       vehicle_color: up(resident.vehicleColor) || null,
       vehicle_tag: up(resident.vehicleTag) || null,
+      contract_type: resident.contractType || null,
+      contract_end_date: resident.contractEndDate || null,
     };
 
     // Determine resident ID for photo upload

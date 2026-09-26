@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Users, Mail, UserCheck, Clock, Activity, Radio, CheckCheck, User, ShieldCheck, ShieldAlert, X, Car } from 'lucide-react';
+import { Users, Mail, UserCheck, Clock, Activity, Radio, CheckCheck, User, ShieldCheck, ShieldAlert, X, Car, AlertTriangle } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { StatsCard } from '@/components/StatsCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { supabaseStorage } from '@/lib/supabase-storage';
 import { supabase } from '@/integrations/supabase/client';
 import { DashboardStats, AccessEntry, Mail as MailType, RealtimeEvent, Resident } from '@/types';
+import { getStayAlert } from '@/lib/utils';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface ControlidLog {
@@ -44,6 +45,13 @@ export const Dashboard = () => {
   const [deviceTypes, setDeviceTypes] = useState<Record<string, string>>({});
   const [photoSignedUrls, setPhotoSignedUrls] = useState<Record<string, string>>({});
   const [selectedPhoto, setSelectedPhoto] = useState<{ url: string; name: string; time: string; location: string } | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  // Recompute prolonged-stay alerts periodically
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Generate signed URLs for access photos stored in the bucket
   useEffect(() => {
@@ -179,6 +187,15 @@ export const Dashboard = () => {
     }
     return hours;
   }, [allEntries]);
+
+  const stayAlerts = useMemo(() => {
+    const referenceTime = new Date(nowTick);
+    return allEntries
+      .filter(e => !e.exitTime)
+      .map(entry => ({ entry, alert: getStayAlert(entry.visitorType, entry.entryTime, entry.exitTime, referenceTime) }))
+      .filter((x): x is { entry: AccessEntry; alert: NonNullable<ReturnType<typeof getStayAlert>> } => x.alert !== null)
+      .sort((a, b) => (a.alert.severity === 'danger' ? -1 : 1) - (b.alert.severity === 'danger' ? -1 : 1));
+  }, [allEntries, nowTick]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -456,6 +473,44 @@ export const Dashboard = () => {
           </CardContent>
         </Card>
       </div>
+
+      {stayAlerts.length > 0 && (
+        <Card className="border-2 border-warning/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center space-x-2 text-base">
+              <AlertTriangle className="h-4 w-4 text-warning" />
+              <span>Alertas de Permanência</span>
+              <Badge variant="secondary" className="ml-auto text-xs">{stayAlerts.length}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {stayAlerts.slice(0, 8).map(({ entry, alert }) => {
+                const isDanger = alert.severity === 'danger';
+                return (
+                  <div
+                    key={entry.id}
+                    className={`flex items-center gap-3 rounded-lg border p-3 ${isDanger ? 'border-destructive/40 bg-destructive/5' : 'border-warning/40 bg-warning/5'}`}
+                  >
+                    <AlertTriangle className={`h-5 w-5 shrink-0 ${isDanger ? 'text-destructive' : 'text-warning'}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold truncate">{entry.visitorName}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {entry.visitorType === 'delivery' ? 'Entregador' : entry.visitorType === 'service_provider' ? 'Prestador' : 'Visitante'} • {entry.apartment}
+                      </p>
+                    </div>
+                    <Badge
+                      className={`shrink-0 text-[10px] ${isDanger ? 'bg-destructive/15 text-destructive border-destructive/30' : 'bg-warning/15 text-warning border-warning/30'}`}
+                    >
+                      {alert.message}
+                    </Badge>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Photo Modal */}
       {selectedPhoto && (

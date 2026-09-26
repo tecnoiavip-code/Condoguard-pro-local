@@ -633,6 +633,8 @@ export type Database = {
         Row: {
           apartment: string
           auth_user_id: string | null
+          contract_end_date: string | null
+          contract_type: string | null
           cpf: string | null
           created_at: string | null
           created_by: string | null
@@ -650,6 +652,8 @@ export type Database = {
         Insert: {
           apartment: string
           auth_user_id?: string | null
+          contract_end_date?: string | null
+          contract_type?: string | null
           cpf?: string | null
           created_at?: string | null
           created_by?: string | null
@@ -667,6 +671,8 @@ export type Database = {
         Update: {
           apartment?: string
           auth_user_id?: string | null
+          contract_end_date?: string | null
+          contract_type?: string | null
           cpf?: string | null
           created_at?: string | null
           created_by?: string | null

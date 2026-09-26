@@ -10,6 +10,8 @@ export interface Resident {
   vehicleModel?: string;
   vehicleColor?: string;
   vehicleTag?: string;
+  contractType?: string;
+  contractEndDate?: string;
   createdAt: string;
 }
 

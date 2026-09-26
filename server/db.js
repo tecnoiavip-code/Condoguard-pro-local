@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS residents (
   id TEXT PRIMARY KEY,
   apartment TEXT NOT NULL,
   auth_user_id TEXT,
+  contract_end_date TEXT,
+  contract_type TEXT,
   cpf TEXT,
   created_at TEXT,
   created_by TEXT,
@@ -310,6 +312,13 @@ CREATE TABLE IF NOT EXISTS vapid_keys (
 `;
 
 db.exec(SCHEMA);
+
+// Migração assistida: adiciona colunas que podem faltar em bancos criados antes
+// da versão atual do schema (ALTER TABLE ADD COLUMN não tem IF NOT EXISTS em todas
+// as versões do SQLite, então verificamos via PRAGMA table_info).
+const residentCols = new Set(db.prepare('PRAGMA table_info(residents)').all().map(c => c.name));
+if (!residentCols.has('contract_type')) db.exec('ALTER TABLE residents ADD COLUMN contract_type TEXT');
+if (!residentCols.has('contract_end_date')) db.exec('ALTER TABLE residents ADD COLUMN contract_end_date TEXT');
 
 // Migração: entradas antigas podem ter entry_time NULL (o frontend não enviava a coluna).
 // Preenche com o horário da saída (ou agora) para manter os logs consistentes.

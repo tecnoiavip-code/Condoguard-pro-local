@@ -10,6 +10,7 @@ import { LogIn, LogOut, Camera, Upload, X, Plus, Pencil, Trash2, Search, Downloa
 import { DeviceCaptureStatus } from '@/components/DeviceCaptureStatus';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AccessEntry, Resident, Device } from '@/types';
+import { formatCPF, formatPlate, getStayAlert } from '@/lib/utils';
 import { useAccessEntries } from '@/hooks/useAccessEntries';
 import { useResidents } from '@/hooks/useResidents';
 import { useDevices } from '@/hooks/useDevices';
@@ -107,6 +108,13 @@ export const NewRegistry = () => {
   useEffect(() => {
     loadBlockedVisitors();
     loadVehicleSuggestions();
+  }, []);
+
+  // Keep an up-to-date clock so prolonged-stay alerts recompute while viewing
+  const [, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(timer);
   }, []);
 
   // Auto-correct pagination when current page exceeds total pages
@@ -687,7 +695,9 @@ export const NewRegistry = () => {
                     <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                       {searchTerm ? 'Nenhum registro encontrado' : 'Nenhuma pessoa no momento'}
                     </TableCell>
-                  </TableRow> : paginatedEntries.map(entry => <TableRow key={entry.id} className={`cursor-pointer ${entry.visitorType === 'delivery' ? 'bg-primary/5 hover:bg-primary/10' : entry.visitorType === 'service_provider' ? 'bg-warning/5 hover:bg-warning/10' : 'bg-success/5 hover:bg-success/10'}`} onClick={() => setSelectedDetailEntry(entry)}>
+                  </TableRow> : paginatedEntries.map(entry => {
+                      const stayAlert = getStayAlert(entry.visitorType, entry.entryTime, entry.exitTime);
+                      return <TableRow key={entry.id} className={`cursor-pointer ${entry.visitorType === 'delivery' ? 'bg-primary/5 hover:bg-primary/10' : entry.visitorType === 'service_provider' ? 'bg-warning/5 hover:bg-warning/10' : 'bg-success/5 hover:bg-success/10'} ${stayAlert ? 'outline outline-1 outline-offset-1 outline-warning/70' : ''}`} onClick={() => setSelectedDetailEntry(entry)}>
                       <TableCell>
                         {entry.photo ? <img src={entry.photo} alt={entry.visitorName} className="w-20 h-20 rounded-full object-cover border-2 border-primary/20" /> : <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center text-3xl">
                             {entry.visitorType === 'delivery' ? '📦' : entry.visitorType === 'service_provider' ? '🔧' : '👤'}
@@ -716,6 +726,16 @@ export const NewRegistry = () => {
                     hour: '2-digit',
                     minute: '2-digit'
                   })}
+                        {stayAlert && (
+                          <div className="mt-1">
+                            <Badge
+                              className={`gap-1 text-[9px] ${stayAlert.severity === 'danger' ? 'bg-destructive/15 text-destructive border-destructive/30' : 'bg-warning/15 text-warning border-warning/30'}`}
+                            >
+                              <AlertTriangle className="h-2.5 w-2.5" />
+                              {stayAlert.message}
+                            </Badge>
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {entry.vehiclePlate ? <div>
@@ -763,7 +783,8 @@ export const NewRegistry = () => {
                           </Button>
                         </div>
                       </TableCell>
-                    </TableRow>)}
+                    </TableRow>
+                      })}
               </TableBody>
             </Table>
           </div>
@@ -800,6 +821,21 @@ export const NewRegistry = () => {
                   <Badge variant="default" className="ml-2 bg-success">Ativo</Badge>
                 </div>
               </div>
+
+              {(() => {
+                const detailAlert = getStayAlert(selectedDetailEntry.visitorType, selectedDetailEntry.entryTime, selectedDetailEntry.exitTime);
+                if (!detailAlert) return null;
+                const isDanger = detailAlert.severity === 'danger';
+                return (
+                  <div className={`rounded-lg border p-3 flex items-start gap-2 ${isDanger ? 'border-destructive bg-destructive/10 text-destructive' : 'border-warning bg-warning/10 text-warning'}`}>
+                    <AlertTriangle className="h-5 w-5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold">Permanência acima do limite</p>
+                      <p className="text-xs text-muted-foreground">{detailAlert.message}</p>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>
@@ -956,11 +992,13 @@ export const NewRegistry = () => {
                 <div className="space-y-1">
                   <Label htmlFor="visitorDocument" className="text-xs">RG/CPF *</Label>
                   <Input id="vd_field" name="vd_field" className="h-9" value={formData.visitorDocument} autoComplete="one-time-code" readOnly onFocus={e => e.currentTarget.removeAttribute('readOnly')} onChange={e => {
+                const raw = e.target.value;
+                const masked = /[A-Za-z]/.test(raw) ? raw.toUpperCase() : formatCPF(raw);
                 setFormData({
                   ...formData,
-                  visitorDocument: e.target.value
+                  visitorDocument: masked
                 });
-                findSimilarEntries(formData.visitorName, e.target.value, formData.vehiclePlate);
+                findSimilarEntries(formData.visitorName, masked, formData.vehiclePlate);
               }} placeholder="Número do documento" required />
                 </div>
               </div>
@@ -1021,11 +1059,12 @@ export const NewRegistry = () => {
                 <div className="space-y-2">
                   <Label htmlFor="vehiclePlate">Placa</Label>
               <Input id="vp_field" name="vp_field" value={formData.vehiclePlate} onChange={e => {
+                const masked = formatPlate(e.target.value);
                 setFormData({
                   ...formData,
-                  vehiclePlate: e.target.value
+                  vehiclePlate: masked
                 });
-                findSimilarEntries(formData.visitorName, formData.visitorDocument, e.target.value);
+                findSimilarEntries(formData.visitorName, formData.visitorDocument, masked);
               }} placeholder="ABC-1234" />
                 </div>
 

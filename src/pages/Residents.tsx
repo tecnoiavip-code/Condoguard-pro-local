@@ -11,6 +11,7 @@ import { Pencil, Trash2, Save, X, Plus, Search, Download, FileSpreadsheet, ScanF
 import { DeviceCaptureStatus } from '@/components/DeviceCaptureStatus';
 import { Badge } from '@/components/ui/badge';
 import { Resident, Device } from '@/types';
+import { formatCPF, formatPhone, formatPlate, isValidCPF, isValidPhone, isValidPlate } from '@/lib/utils';
 import { useResidents } from '@/hooks/useResidents';
 import { useDevices } from '@/hooks/useDevices';
 import { toast } from 'sonner';
@@ -51,6 +52,8 @@ export const Residents = () => {
     vehicleModel: '',
     vehicleColor: '',
     vehicleTag: '',
+    contractType: '',
+    contractEndDate: '',
   });
   const [showCamera, setShowCamera] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -92,6 +95,23 @@ export const Residents = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (formData.cpf && !isValidCPF(formData.cpf)) {
+      toast.error('CPF inválido. Verifique os dígitos.');
+      return;
+    }
+    if (formData.phone && !isValidPhone(formData.phone)) {
+      toast.error('Telefone inválido. Informe DDD + número (10 ou 11 dígitos).');
+      return;
+    }
+    if (formData.vehiclePlate && !isValidPlate(formData.vehiclePlate)) {
+      toast.error('Placa inválida. Use o formato ABC-1234 ou ABC1D23 (Mercosul).');
+      return;
+    }
+    if (formData.contractEndDate && Number.isNaN(new Date(`${formData.contractEndDate}T00:00:00`).getTime())) {
+      toast.error('Data de vencimento do contrato inválida.');
+      return;
+    }
     
     const residentData: Resident = {
       id: editingId || `res_${Date.now()}`,
@@ -147,6 +167,8 @@ export const Residents = () => {
       vehicleModel: resident.vehicleModel || '',
       vehicleColor: resident.vehicleColor || '',
       vehicleTag: resident.vehicleTag || '',
+      contractType: resident.contractType || '',
+      contractEndDate: resident.contractEndDate || '',
     });
     setIsDialogOpen(true);
   };
@@ -347,6 +369,8 @@ export const Residents = () => {
       vehicleModel: '',
       vehicleColor: '',
       vehicleTag: '',
+      contractType: '',
+      contractEndDate: '',
     });
     stopCamera();
     setIsDialogOpen(false);
@@ -381,6 +405,24 @@ export const Residents = () => {
       setPhotoSyncLoading(false);
       setPhotoSyncStatus('');
     }
+  };
+
+  const getContractStatus = (endDate?: string): { label: string; className: string } | null => {
+    if (!endDate) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const end = new Date(`${endDate}T00:00:00`);
+    const diffDays = Math.ceil((end.getTime() - today.getTime()) / 86400000);
+    if (diffDays < 0) {
+      return { label: 'Contrato vencido', className: 'bg-destructive/15 text-destructive border-destructive/30' };
+    }
+    if (diffDays <= 30) {
+      return {
+        label: diffDays === 0 ? 'Vence hoje' : `Vence em ${diffDays} dia${diffDays === 1 ? '' : 's'}`,
+        className: 'bg-warning/15 text-warning border-warning/30',
+      };
+    }
+    return { label: `Válido até ${format(end, 'dd/MM/yyyy', { locale: ptBR })}`, className: 'bg-success/15 text-success border-success/30' };
   };
 
   return (
@@ -461,13 +503,14 @@ export const Residents = () => {
                   <TableHead>Telefone</TableHead>
                   <TableHead>E-mail</TableHead>
                   <TableHead>Veículo</TableHead>
+                  <TableHead>Vínculo</TableHead>
                   <TableHead className="text-right w-[100px]">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {paginatedResidents.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                       Nenhum morador cadastrado ainda
                     </TableCell>
                   </TableRow>
@@ -495,6 +538,31 @@ export const Residents = () => {
                             {resident.vehicleModel && (
                               <div className="text-xs">{resident.vehicleModel}</div>
                             )}
+                          </div>
+                        ) : (
+                          '-'
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {resident.contractType || resident.contractEndDate ? (
+                          <div className="space-y-1">
+                            <Badge variant="outline" className="text-[10px]">
+                              {resident.contractType === 'proprietario'
+                                ? 'Proprietário'
+                                : resident.contractType === 'inquilino'
+                                  ? 'Inquilino'
+                                  : resident.contractType === 'dependente'
+                                    ? 'Dependente'
+                                    : 'Vínculo'}
+                            </Badge>
+                            {(() => {
+                              const status = getContractStatus(resident.contractEndDate);
+                              return status ? (
+                                <div>
+                                  <Badge className={`text-[9px] ${status.className}`}>{status.label}</Badge>
+                                </div>
+                              ) : null;
+                            })()}
                           </div>
                         ) : (
                           '-'
@@ -581,6 +649,59 @@ export const Residents = () => {
                         <div>
                           <span className="text-muted-foreground block">TAG</span>
                           <span className="font-medium">{selectedResident.vehicleTag || '-'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {(selectedResident.contractType || selectedResident.contractEndDate) && (
+                    <div className="border-t pt-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-semibold">Perfil Residencial</h4>
+                          {(() => {
+                            const status = getContractStatus(selectedResident.contractEndDate);
+                            if (!status) return null;
+                            const isExpired = selectedResident.contractEndDate && new Date(`${selectedResident.contractEndDate}T00:00:00`).getTime() < Date.now();
+                            return (
+                              <Badge className={`text-[10px] ${isExpired ? 'bg-destructive/15 text-destructive border-destructive/30' : status.className}`}>
+                                {status.label}
+                              </Badge>
+                            );
+                          })()}
+                        </div>
+                        {selectedResident.contractType && (
+                          <Badge variant="outline" className="text-[11px]">
+                            {selectedResident.contractType === 'proprietario'
+                              ? '🏠 Proprietário'
+                              : selectedResident.contractType === 'inquilino'
+                                ? '🔑 Inquilino'
+                                : selectedResident.contractType === 'dependente'
+                                  ? '👨‍👩‍👧 Dependente'
+                                  : selectedResident.contractType}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 text-sm mt-2">
+                        <div>
+                          <span className="text-muted-foreground block">Tipo de Vínculo</span>
+                          <span className="font-medium">
+                            {selectedResident.contractType === 'proprietario'
+                              ? 'Proprietário'
+                              : selectedResident.contractType === 'inquilino'
+                                ? 'Inquilino'
+                                : selectedResident.contractType === 'dependente'
+                                  ? 'Dependente'
+                                  : selectedResident.contractType || '-'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground block">Vencimento do Contrato</span>
+                          <span className="font-medium">
+                            {selectedResident.contractEndDate
+                              ? format(new Date(`${selectedResident.contractEndDate}T00:00:00`), 'dd/MM/yyyy', { locale: ptBR })
+                              : '-'}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -689,7 +810,7 @@ export const Residents = () => {
                 <Input
                   id="cpf"
                   value={formData.cpf}
-                  onChange={(e) => setFormData({ ...formData, cpf: e.target.value })}
+                  onChange={(e) => setFormData({ ...formData, cpf: formatCPF(e.target.value) })}
                   placeholder="000.000.000-00 (opcional)"
                 />
               </div>
@@ -710,8 +831,8 @@ export const Residents = () => {
                 <Input
                   id="phone"
                   value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  placeholder="11999999999"
+                  onChange={(e) => setFormData({ ...formData, phone: formatPhone(e.target.value) })}
+                  placeholder="(11) 99999-9999"
                 />
               </div>
               <div className="space-y-2 md:col-span-2">
@@ -731,7 +852,7 @@ export const Residents = () => {
                 <Input
                   id="vehiclePlate"
                   value={formData.vehiclePlate}
-                  onChange={(e) => setFormData({ ...formData, vehiclePlate: e.target.value })}
+                  onChange={(e) => setFormData({ ...formData, vehiclePlate: formatPlate(e.target.value) })}
                   placeholder="ABC-1234"
                 />
               </div>
@@ -770,6 +891,30 @@ export const Residents = () => {
                     </Button>
                   )}
                 </div>
+              </div>
+
+              {/* Residential Profile */}
+              <div className="space-y-2">
+                <Label htmlFor="contractType">Tipo de Vínculo</Label>
+                <Select value={formData.contractType} onValueChange={(value) => setFormData({ ...formData, contractType: value })}>
+                  <SelectTrigger id="contractType" className="w-full">
+                    <SelectValue placeholder="Selecione o vínculo..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="proprietario">Proprietário</SelectItem>
+                    <SelectItem value="inquilino">Inquilino</SelectItem>
+                    <SelectItem value="dependente">Dependente</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="contractEndDate">Vencimento do Contrato</Label>
+                <Input
+                  id="contractEndDate"
+                  type="date"
+                  value={formData.contractEndDate}
+                  onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })}
+                />
               </div>
             </div>
             <div className="flex space-x-2">
