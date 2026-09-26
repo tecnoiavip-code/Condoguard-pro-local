@@ -53,16 +53,29 @@ const BOOLEAN_COLUMNS = {
 };
 
 const COLUMNS = {};
+function readTableColumns(table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+}
 function tableColumns(table) {
   if (!COLUMNS[table]) {
-    COLUMNS[table] = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+    COLUMNS[table] = readTableColumns(table);
+  }
+  return COLUMNS[table];
+}
+// Re-lê o schema quando uma coluna solicitada não estiver no cache: permite que
+// migrações aplicadas (ex.: novas colunas) passem a valer sem reiniciar o servidor.
+function invalidateIfColumnMissing(table, names) {
+  const cols = tableColumns(table);
+  const list = Array.isArray(names) ? names : [names];
+  if (list.some(n => n && !cols.has(n))) {
+    COLUMNS[table] = readTableColumns(table);
   }
   return COLUMNS[table];
 }
 
 function sanitizeWrite(table, row) {
   const out = {};
-  const cols = tableColumns(table);
+  const cols = invalidateIfColumnMissing(table, Object.keys(row));
   for (const [k, v] of Object.entries(row)) {
     if (v === undefined || !cols.has(k)) continue;
     let val = v;
@@ -323,7 +336,8 @@ app.get('/api/table/:table', authMiddleware, (req, res) => {
   const { table } = req.params;
   if (!KNOWN_TABLES.has(table)) return res.status(400).json({ data: null, error: { message: `Unknown table: ${table}` } });
   const selectRaw = typeof req.query.select === 'string' ? req.query.select : '*';
-  const selectCols = selectRaw === '*' ? '*' : selectRaw.split(',').map(c => c.trim()).filter(c => tableColumns(table).has(c));
+  const requestedCols = selectRaw === '*' ? [] : selectRaw.split(',').map(c => c.trim()).filter(Boolean);
+  const selectCols = selectRaw === '*' ? '*' : requestedCols.filter(c => invalidateIfColumnMissing(table, requestedCols).has(c));
   const filters = req.query.filters ? JSON.parse(req.query.filters) : [];
   const orExpr = typeof req.query.or === 'string' ? req.query.or : null;
   const orderCol = typeof req.query.order === 'string' && tableColumns(table).has(req.query.order) ? req.query.order : null;
