@@ -88,6 +88,8 @@ const formatDuration = (minutes: number): string => {
   return `${mins}min`;
 };
 
+export { formatDuration };
+
 // Alerta de permanência prolongada:
 // - Entregador (delivery): mais de 45 minutos
 // - Prestador de serviço: mais de 4 horas ou ainda no local após as 18h
@@ -128,4 +130,35 @@ export function getStayAlert(
   }
 
   return null;
+}
+
+// Duração da permanência em minutos (usa a saída registrada ou o horário de referência)
+export function getStayDurationMinutes(
+  entryTime: string | null | undefined,
+  exitTime: string | null | undefined = null,
+  referenceTime: Date = new Date()
+): number | null {
+  if (!entryTime) return null;
+  const entry = new Date(entryTime).getTime();
+  if (Number.isNaN(entry)) return null;
+  const end = exitTime ? new Date(exitTime).getTime() : referenceTime.getTime();
+  if (Number.isNaN(end)) return null;
+  const minutes = Math.floor((end - entry) / 60000);
+  return minutes >= 0 ? minutes : 0;
+}
+
+// A permanência entrou antes das 18h e terminou (ou continua) depois das 18h
+export function staysAfter18h(
+  entryTime: string | null | undefined,
+  exitTime: string | null | undefined = null,
+  referenceTime: Date = new Date()
+): boolean {
+  if (!entryTime) return false;
+  const start = new Date(entryTime);
+  const end = exitTime ? new Date(exitTime) : referenceTime;
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+  if (start.toDateString() !== end.toDateString()) return false;
+  const cutoff = new Date(end);
+  cutoff.setHours(18, 0, 0, 0);
+  return start.getTime() < cutoff.getTime() && end.getTime() >= cutoff.getTime();
 }

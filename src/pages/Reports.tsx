@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import StandardPagination from '@/components/StandardPagination';
 import { exportToCSV } from '@/lib/export-csv';
 import { supabase } from '@/integrations/supabase/client';
@@ -9,14 +9,52 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle, Clock } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useAccessEntries } from '@/hooks/useAccessEntries';
+import { getStayDurationMinutes, staysAfter18h, formatDuration, DELIVERY_MAX_MINUTES, SERVICE_PROVIDER_MAX_HOURS } from '@/lib/utils';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+
+type StayPeriod = '24h' | '7d' | '30d' | 'all';
+type StayTypeFilter = 'all' | 'delivery' | 'service_provider';
+type StayStatusFilter = 'all' | 'active' | 'closed';
+
+const STAY_PERIOD_LABELS: Record<StayPeriod, string> = {
+  '24h': 'Últimas 24 horas',
+  '7d': 'Últimos 7 dias',
+  '30d': 'Últimos 30 dias',
+  'all': 'Todo o período',
+};
+
+const STAY_PERIOD_HOURS: Record<StayPeriod, number | null> = {
+  '24h': 24,
+  '7d': 24 * 7,
+  '30d': 24 * 30,
+  'all': null,
+};
+
+const STAY_TYPE_LABELS: Record<StayTypeFilter, string> = {
+  all: 'Todos',
+  delivery: 'Entregadores',
+  service_provider: 'Prestadores',
+};
+
+const STAY_TYPE_LABELS_SINGULAR: Record<string, string> = {
+  delivery: 'Entregador',
+  service_provider: 'Prestador',
+};
+
+const STAY_STATUS_LABELS: Record<StayStatusFilter, string> = {
+  all: 'Todas',
+  active: 'Ainda no local',
+  closed: 'Saída registrada',
+};
 
 interface Shift {
   id: string;
@@ -63,7 +101,14 @@ interface ShiftEquipmentCheck {
 }
 
 export const Reports = () => {
-  const [activeTab, setActiveTab] = useState<'shifts' | 'incidents' | 'equipment'>('shifts');
+  const [activeTab, setActiveTab] = useState<'shifts' | 'incidents' | 'equipment' | 'permanencias'>('shifts');
+
+  // Relatório de permanências prolongadas
+  const { entries: accessEntries } = useAccessEntries();
+  const [stayPeriod, setStayPeriod] = useState<StayPeriod>('7d');
+  const [stayTypeFilter, setStayTypeFilter] = useState<StayTypeFilter>('all');
+  const [stayStatusFilter, setStayStatusFilter] = useState<StayStatusFilter>('all');
+  const [stayPage, setStayPage] = useState(1);
 
   // Shifts state
   const [shifts, setShifts] = useState<Shift[]>([]);
@@ -124,7 +169,7 @@ export const Reports = () => {
     } else {
       setPortariaEquipment(data || []);
       // Initialize checks for each equipment
-      setEquipmentChecks((data || []).map((eq: any) => ({
+      setEquipmentChecks((data || []).map(eq => ({
         equipment_id: eq.id,
         status: 'functional' as const,
         notes: '',
@@ -423,6 +468,101 @@ export const Reports = () => {
   const paginatedEquipment = portariaEquipment.slice((equipmentPage - 1) * ITEMS_PER_PAGE, equipmentPage * ITEMS_PER_PAGE);
   const totalEquipmentPages = Math.ceil(portariaEquipment.length / ITEMS_PER_PAGE);
 
+  // ========== RELATÓRIO DE PERMANÊNCIAS PROLONGADAS ==========
+  // Auditoria de segurança: entregadores acima de 45min e prestadores acima de
+  // 4h ou que permaneceram após as 18h.
+  const prolongedStays = useMemo(() => {
+    const now = new Date();
+    const hoursLimit = STAY_PERIOD_HOURS[stayPeriod];
+    const periodStart = hoursLimit ? now.getTime() - hoursLimit * 3600000 : null;
+
+    return accessEntries
+      .filter(entry => !!entry.entryTime)
+      .filter(entry => entry.visitorType === 'delivery' || entry.visitorType === 'service_provider')
+      .filter(entry => stayTypeFilter === 'all' || entry.visitorType === stayTypeFilter)
+      .filter(entry =>
+        stayStatusFilter === 'all'
+          ? true
+          : stayStatusFilter === 'active' ? !entry.exitTime : !!entry.exitTime
+      )
+      .filter(entry => {
+        if (periodStart === null) return true;
+        const ts = new Date(entry.entryTime).getTime();
+        return !Number.isNaN(ts) && ts >= periodStart;
+      })
+      .map(entry => {
+        const minutes = getStayDurationMinutes(entry.entryTime, entry.exitTime, now) ?? 0;
+        const after18h = staysAfter18h(entry.entryTime, entry.exitTime, now);
+        const isDelivery = entry.visitorType === 'delivery';
+        const reasons: string[] = [];
+        if (isDelivery && minutes > DELIVERY_MAX_MINUTES) {
+          reasons.push(`Entrega acima de ${DELIVERY_MAX_MINUTES}min`);
+        }
+        if (!isDelivery) {
+          if (minutes > SERVICE_PROVIDER_MAX_HOURS * 60) {
+            reasons.push(`Serviço acima de ${SERVICE_PROVIDER_MAX_HOURS}h`);
+          }
+          if (after18h) reasons.push('Presente após as 18h');
+        }
+        return { entry, minutes, after18h, isActive: !entry.exitTime, reasons };
+      })
+      .filter(row => row.reasons.length > 0)
+      .sort((a, b) => new Date(b.entry.entryTime).getTime() - new Date(a.entry.entryTime).getTime());
+  }, [accessEntries, stayPeriod, stayTypeFilter, stayStatusFilter]);
+
+  const activeStaysCount = prolongedStays.filter(row => row.isActive).length;
+  const after18hCount = prolongedStays.filter(row => row.after18h).length;
+  const longestStayMinutes = prolongedStays.reduce((max, row) => Math.max(max, row.minutes), 0);
+  const totalStayPages = Math.max(1, Math.ceil(prolongedStays.length / ITEMS_PER_PAGE));
+  const currentStayPage = Math.min(stayPage, totalStayPages);
+  const paginatedStays = prolongedStays.slice(
+    (currentStayPage - 1) * ITEMS_PER_PAGE,
+    currentStayPage * ITEMS_PER_PAGE
+  );
+
+  const buildStayRow = (row: (typeof prolongedStays)[number]) => [
+    row.entry.visitorName,
+    STAY_TYPE_LABELS_SINGULAR[row.entry.visitorType] || row.entry.visitorType,
+    row.entry.apartment || '-',
+    row.entry.visitorDocument || '-',
+    format(new Date(row.entry.entryTime), 'dd/MM/yyyy HH:mm', { locale: ptBR }),
+    row.entry.exitTime ? format(new Date(row.entry.exitTime), 'dd/MM/yyyy HH:mm', { locale: ptBR }) : 'Em andamento',
+    formatDuration(row.minutes),
+    row.isActive ? 'Ainda no local' : 'Encerrada',
+    row.reasons.join('; '),
+  ];
+
+  const exportProlongedStaysToPDF = () => {
+    const doc = new jsPDF({ orientation: 'landscape' });
+    doc.text('Relatório de Permanências Prolongadas', 14, 15);
+    doc.text(
+      `Período: ${STAY_PERIOD_LABELS[stayPeriod]} | Tipo: ${STAY_TYPE_LABELS[stayTypeFilter]} | Situação: ${STAY_STATUS_LABELS[stayStatusFilter]}`,
+      14,
+      22
+    );
+    doc.text(
+      `Emitido em: ${format(new Date(), 'dd/MM/yyyy HH:mm', { locale: ptBR })} | ${prolongedStays.length} ocorrência(s) | ` +
+        `Critério: entregadores > ${DELIVERY_MAX_MINUTES}min; prestadores > ${SERVICE_PROVIDER_MAX_HOURS}h ou presentes após as 18h`,
+      14,
+      29
+    );
+
+    autoTable(doc, {
+      head: [['Nome', 'Tipo', 'Apartamento', 'Documento', 'Entrada', 'Saída', 'Duração', 'Situação', 'Motivo']],
+      body: prolongedStays.map(buildStayRow),
+      startY: 35,
+    });
+
+    doc.save(`permanencias-prolongadas-${format(new Date(), 'dd-MM-yyyy')}.pdf`);
+    toast.success('PDF gerado com sucesso');
+  };
+
+  const exportProlongedStaysToCSV = () => {
+    const headers = ['Nome', 'Tipo', 'Apartamento', 'Documento', 'Entrada', 'Saída', 'Duração', 'Situação', 'Motivo'];
+    exportToCSV(`permanencias-prolongadas-${format(new Date(), 'dd-MM-yyyy')}`, headers, prolongedStays.map(buildStayRow));
+    toast.success('CSV gerado com sucesso');
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -441,6 +581,10 @@ export const Reports = () => {
         <Button variant={activeTab === 'equipment' ? 'default' : 'ghost'} onClick={() => setActiveTab('equipment')}>
           <Wrench className="mr-2 h-4 w-4" />
           Equipamentos
+        </Button>
+        <Button variant={activeTab === 'permanencias' ? 'default' : 'ghost'} onClick={() => setActiveTab('permanencias')}>
+          <Clock className="mr-2 h-4 w-4" />
+          Permanências Prolongadas
         </Button>
       </div>
 
@@ -791,6 +935,175 @@ export const Reports = () => {
                 )}
               </div>
               <StandardPagination currentPage={equipmentPage} totalPages={totalEquipmentPages} onPageChange={setEquipmentPage} className="mt-4" />
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ========== PERMANÊNCIAS PROLONGADAS ========== */}
+      {activeTab === 'permanencias' && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span>Relatório de Permanências Prolongadas</span>
+                  <Badge variant="outline" className="text-xs">
+                    {prolongedStays.length} ocorrência(s)
+                  </Badge>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={exportProlongedStaysToPDF} disabled={prolongedStays.length === 0}>
+                    <Download className="h-4 w-4 mr-2" />
+                    PDF
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={exportProlongedStaysToCSV} disabled={prolongedStays.length === 0}>
+                    <FileSpreadsheet className="h-4 w-4 mr-2" />
+                    CSV
+                  </Button>
+                </div>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Auditoria de segurança condominial: entradas em que a permanência excedeu o padrão —
+                entregadores acima de {DELIVERY_MAX_MINUTES} minutos e prestadores acima de {SERVICE_PROVIDER_MAX_HOURS} horas
+                ou que permaneceram após as 18h. Use o PDF como histórico formal para o síndico.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="border rounded-lg p-3">
+                  <span className="text-xs text-muted-foreground">Total de ocorrências</span>
+                  <p className="text-2xl font-bold">{prolongedStays.length}</p>
+                </div>
+                <div className="border rounded-lg p-3">
+                  <span className="text-xs text-muted-foreground">Ainda no local</span>
+                  <p className="text-2xl font-bold text-warning">{activeStaysCount}</p>
+                </div>
+                <div className="border rounded-lg p-3">
+                  <span className="text-xs text-muted-foreground">Maior permanência</span>
+                  <p className="text-2xl font-bold text-destructive">
+                    {longestStayMinutes > 0 ? formatDuration(longestStayMinutes) : '-'}
+                  </p>
+                  {after18hCount > 0 && (
+                    <span className="text-xs text-muted-foreground">{after18hCount} após as 18h</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground mr-1">Período:</span>
+                  {(Object.keys(STAY_PERIOD_LABELS) as StayPeriod[]).map(period => (
+                    <Button
+                      key={period}
+                      size="sm"
+                      variant={stayPeriod === period ? 'default' : 'outline'}
+                      onClick={() => {
+                        setStayPeriod(period);
+                        setStayPage(1);
+                      }}
+                    >
+                      {STAY_PERIOD_LABELS[period]}
+                    </Button>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground mr-1">Tipo:</span>
+                  {(Object.keys(STAY_TYPE_LABELS) as StayTypeFilter[]).map(type => (
+                    <Button
+                      key={type}
+                      size="sm"
+                      variant={stayTypeFilter === type ? 'default' : 'outline'}
+                      onClick={() => {
+                        setStayTypeFilter(type);
+                        setStayPage(1);
+                      }}
+                    >
+                      {STAY_TYPE_LABELS[type]}
+                    </Button>
+                  ))}
+                  <span className="text-xs text-muted-foreground ml-4 mr-1">Situação:</span>
+                  {(Object.keys(STAY_STATUS_LABELS) as StayStatusFilter[]).map(status => (
+                    <Button
+                      key={status}
+                      size="sm"
+                      variant={stayStatusFilter === status ? 'default' : 'outline'}
+                      onClick={() => {
+                        setStayStatusFilter(status);
+                        setStayPage(1);
+                      }}
+                    >
+                      {STAY_STATUS_LABELS[status]}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Nome</TableHead>
+                      <TableHead>Tipo</TableHead>
+                      <TableHead>Apto</TableHead>
+                      <TableHead>Entrada</TableHead>
+                      <TableHead>Saída</TableHead>
+                      <TableHead>Duração</TableHead>
+                      <TableHead>Situação</TableHead>
+                      <TableHead>Motivo</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedStays.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                          Nenhuma permanência prolongada no período e filtros selecionados.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      paginatedStays.map(row => (
+                        <TableRow key={row.entry.id} className="hover:bg-muted/50">
+                          <TableCell>
+                            <span className="font-medium">{row.entry.visitorName}</span>
+                            {row.entry.company && (
+                              <span className="block text-xs text-muted-foreground">{row.entry.company}</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-sm">{STAY_TYPE_LABELS_SINGULAR[row.entry.visitorType] || row.entry.visitorType}</TableCell>
+                          <TableCell className="text-sm">{row.entry.apartment || '-'}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {format(new Date(row.entry.entryTime), 'dd/MM/yyyy HH:mm', { locale: ptBR })}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {row.entry.exitTime
+                              ? format(new Date(row.entry.exitTime), 'dd/MM/yyyy HH:mm', { locale: ptBR })
+                              : '—'}
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              className={`text-[10px] ${
+                                row.minutes > SERVICE_PROVIDER_MAX_HOURS * 60
+                                  ? 'bg-destructive/15 text-destructive border-destructive/30'
+                                  : 'bg-warning/15 text-warning border-warning/30'
+                              }`}
+                            >
+                              {formatDuration(row.minutes)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={row.isActive ? 'default' : 'outline'} className="text-[10px]">
+                              {row.isActive ? 'Ainda no local' : 'Encerrada'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{row.reasons.join('; ')}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              <StandardPagination currentPage={currentStayPage} totalPages={totalStayPages} onPageChange={setStayPage} />
             </CardContent>
           </Card>
         </div>

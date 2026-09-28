@@ -30,6 +30,8 @@ import autoTable from 'jspdf-autotable';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 
+type ContractFilter = 'all' | 'tenants' | 'expiring' | 'expired';
+
 export const Residents = () => {
   const { residents, loading, saveResident, deleteResident, refresh } = useResidents();
   const { devices } = useDevices();
@@ -40,6 +42,7 @@ export const Residents = () => {
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
+  const [contractFilter, setContractFilter] = useState<ContractFilter>('all');
   const itemsPerPage = 10;
   const [formData, setFormData] = useState({
     name: '',
@@ -82,11 +85,73 @@ export const Residents = () => {
   const facialDevices = devices.filter(d => d.type === 'facial_recognition');
   const tagDevices = devices.filter(d => d.type === 'vehicle_tag' || d.type === 'card_reader');
 
-  const filteredResidents = residents.filter(resident =>
-    resident.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    resident.apartment.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (resident.cpf || '').includes(searchTerm)
-  );
+  const CONTRACT_TYPE_LABELS: Record<string, string> = {
+    proprietario: 'Proprietário',
+    inquilino: 'Inquilino',
+    dependente: 'Familiar',
+  };
+
+  const getContractTypeLabel = (type?: string) => (type ? CONTRACT_TYPE_LABELS[type] || 'Vínculo' : '-');
+
+  const getContractEndDateLabel = (endDate?: string) =>
+    endDate ? format(new Date(`${endDate}T00:00:00`), 'dd/MM/yyyy', { locale: ptBR }) : '-';
+
+  // Dias até o vencimento (negativo = vencido, null = sem data)
+  const getContractDaysLeft = (endDate?: string) => {
+    if (!endDate) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const end = new Date(`${endDate}T00:00:00`);
+    if (Number.isNaN(end.getTime())) return null;
+    return Math.ceil((end.getTime() - today.getTime()) / 86400000);
+  };
+
+  const matchesContractFilter = (resident: Resident) => {
+    if (contractFilter === 'all') return true;
+    if (contractFilter === 'tenants') return resident.contractType === 'inquilino';
+    const daysLeft = getContractDaysLeft(resident.contractEndDate);
+    if (daysLeft === null) return false;
+    if (contractFilter === 'expiring') return daysLeft >= 0 && daysLeft <= 30;
+    return daysLeft < 0;
+  };
+
+  const contractFilterOptions: { value: ContractFilter; label: string }[] = [
+    { value: 'all', label: 'Todos' },
+    { value: 'tenants', label: 'Inquilinos' },
+    { value: 'expiring', label: 'A vencer (30 dias)' },
+    { value: 'expired', label: 'Vencidos' },
+  ];
+
+  const contractFilterCounts: Record<ContractFilter, number> = {
+    all: residents.length,
+    tenants: residents.filter(r => r.contractType === 'inquilino').length,
+    expiring: residents.filter(r => {
+      const d = getContractDaysLeft(r.contractEndDate);
+      return d !== null && d >= 0 && d <= 30;
+    }).length,
+    expired: residents.filter(r => {
+      const d = getContractDaysLeft(r.contractEndDate);
+      return d !== null && d < 0;
+    }).length,
+  };
+
+  const activeContractFilterLabel =
+    contractFilterOptions.find(o => o.value === contractFilter)?.label || 'Todos';
+
+  const emptyListMessage =
+    residents.length === 0
+      ? 'Nenhum morador cadastrado ainda'
+      : contractFilter !== 'all'
+        ? `Nenhum morador no filtro "${activeContractFilterLabel}"${searchTerm ? ` para "${searchTerm}"` : ''}`
+        : `Nenhum morador encontrado para "${searchTerm}"`;
+
+  const filteredResidents = residents.filter(resident => {
+    const matchesSearch =
+      resident.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      resident.apartment.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (resident.cpf || '').includes(searchTerm);
+    return matchesSearch && matchesContractFilter(resident);
+  });
   const totalPages = Math.ceil(filteredResidents.length / itemsPerPage);
   const paginatedResidents = filteredResidents.slice(
     (currentPage - 1) * itemsPerPage,
@@ -323,9 +388,10 @@ export const Residents = () => {
   };
 
   const exportResidentsToPDF = () => {
-    const doc = new jsPDF();
+    const doc = new jsPDF({ orientation: 'landscape' });
     doc.text('Lista de Moradores', 14, 15);
     doc.text(`Data: ${format(new Date(), 'dd/MM/yyyy HH:mm', { locale: ptBR })}`, 14, 22);
+    doc.text(`Filtro: ${activeContractFilterLabel}${searchTerm ? ` | Busca: "${searchTerm}"` : ''} (${filteredResidents.length} registro(s))`, 14, 29);
 
     const tableData = filteredResidents.map(resident => [
       resident.name,
@@ -333,13 +399,15 @@ export const Residents = () => {
       resident.cpf || '-',
       resident.phone || '-',
       resident.email || '-',
-      resident.vehiclePlate ? `${resident.vehiclePlate} - ${resident.vehicleModel || ''}` : '-'
+      resident.vehiclePlate ? `${resident.vehiclePlate} - ${resident.vehicleModel || ''}` : '-',
+      getContractTypeLabel(resident.contractType),
+      getContractEndDateLabel(resident.contractEndDate),
     ]);
 
     autoTable(doc, {
-      head: [['Nome', 'Apt', 'CPF', 'Telefone', 'E-mail', 'Veículo']],
+      head: [['Nome', 'Apt', 'CPF', 'Telefone', 'E-mail', 'Veículo', 'Vínculo', 'Venc. Contrato']],
       body: tableData,
-      startY: 28,
+      startY: 35,
     });
 
     doc.save(`moradores-${format(new Date(), 'dd-MM-yyyy')}.pdf`);
@@ -347,10 +415,12 @@ export const Residents = () => {
   };
 
   const exportResidentsToCSV = () => {
-    const headers = ['Nome', 'Apt', 'CPF', 'Telefone', 'E-mail', 'Veículo'];
+    const headers = ['Nome', 'Apt', 'CPF', 'Telefone', 'E-mail', 'Veículo', 'Vínculo', 'Venc. Contrato'];
     const rows = filteredResidents.map(resident => [
       resident.name, resident.apartment, resident.cpf || '-', resident.phone || '-',
       resident.email || '-', resident.vehiclePlate ? `${resident.vehiclePlate} - ${resident.vehicleModel || ''}` : '-',
+      getContractTypeLabel(resident.contractType),
+      getContractEndDateLabel(resident.contractEndDate),
     ]);
     exportToCSV(`moradores-${format(new Date(), 'dd-MM-yyyy')}`, headers, rows);
     toast.success('CSV gerado com sucesso');
@@ -408,11 +478,8 @@ export const Residents = () => {
   };
 
   const getContractStatus = (endDate?: string): { label: string; className: string } | null => {
-    if (!endDate) return null;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const end = new Date(`${endDate}T00:00:00`);
-    const diffDays = Math.ceil((end.getTime() - today.getTime()) / 86400000);
+    const diffDays = getContractDaysLeft(endDate);
+    if (diffDays === null) return null;
     if (diffDays < 0) {
       return { label: 'Contrato vencido', className: 'bg-destructive/15 text-destructive border-destructive/30' };
     }
@@ -422,7 +489,7 @@ export const Residents = () => {
         className: 'bg-warning/15 text-warning border-warning/30',
       };
     }
-    return { label: `Válido até ${format(end, 'dd/MM/yyyy', { locale: ptBR })}`, className: 'bg-success/15 text-success border-success/30' };
+    return { label: `Válido até ${getContractEndDateLabel(endDate)}`, className: 'bg-success/15 text-success border-success/30' };
   };
 
   return (
@@ -462,7 +529,9 @@ export const Residents = () => {
             <div className="flex items-center gap-2">
               <span>Lista de Moradores</span>
               <span className="text-sm font-normal text-muted-foreground">
-                Total: {residents.length}
+                {contractFilter === 'all' && !searchTerm
+                  ? `Total: ${residents.length}`
+                  : `Exibindo: ${filteredResidents.length} de ${residents.length}`}
               </span>
             </div>
             <div className="flex gap-2">
@@ -478,7 +547,7 @@ export const Residents = () => {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="mb-4">
+          <div className="mb-4 space-y-3">
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
@@ -490,6 +559,22 @@ export const Residents = () => {
                 }}
                 className="pl-10"
               />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground mr-1">Filtro de contratos:</span>
+              {contractFilterOptions.map(option => (
+                <Button
+                  key={option.value}
+                  size="sm"
+                  variant={contractFilter === option.value ? 'default' : 'outline'}
+                  onClick={() => {
+                    setContractFilter(option.value);
+                    setCurrentPage(1);
+                  }}
+                >
+                  {option.label} ({contractFilterCounts[option.value]})
+                </Button>
+              ))}
             </div>
           </div>
           <div className="rounded-md border">
@@ -511,7 +596,7 @@ export const Residents = () => {
                 {paginatedResidents.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
-                      Nenhum morador cadastrado ainda
+                      {emptyListMessage}
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -547,13 +632,7 @@ export const Residents = () => {
                         {resident.contractType || resident.contractEndDate ? (
                           <div className="space-y-1">
                             <Badge variant="outline" className="text-[10px]">
-                              {resident.contractType === 'proprietario'
-                                ? 'Proprietário'
-                                : resident.contractType === 'inquilino'
-                                  ? 'Inquilino'
-                                  : resident.contractType === 'dependente'
-                                    ? 'Dependente'
-                                    : 'Vínculo'}
+                              {getContractTypeLabel(resident.contractType)}
                             </Badge>
                             {(() => {
                               const status = getContractStatus(resident.contractEndDate);
@@ -676,9 +755,7 @@ export const Residents = () => {
                               ? '🏠 Proprietário'
                               : selectedResident.contractType === 'inquilino'
                                 ? '🔑 Inquilino'
-                                : selectedResident.contractType === 'dependente'
-                                  ? '👨‍👩‍👧 Dependente'
-                                  : selectedResident.contractType}
+                                : '👨‍👩‍👧 Familiar'}
                           </Badge>
                         )}
                       </div>
