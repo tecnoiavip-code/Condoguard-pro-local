@@ -7,23 +7,17 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Shield, Plus, Clock, CalendarDays, Car, MessageSquare, Users, Trash2, FileText, User, AlertTriangle } from 'lucide-react';
+import { Shield, Plus, Clock, CalendarDays, Car, MessageSquare, Users, Trash2, FileText, User, AlertTriangle, QrCode } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import ResidentPagination from '@/components/resident/ResidentPagination';
+import ResidentPassDialog, { PassAuthorization } from '@/components/resident/ResidentPassDialog';
 
-interface Authorization {
-  id: string;
-  visitor_name: string;
+interface Authorization extends PassAuthorization {
   visitor_document: string | null;
-  authorized_date: string;
-  authorized_until: string | null;
-  purpose: string | null;
-  vehicle_plate: string | null;
-  status: string | null;
   staff_notes: string | null;
 }
 
@@ -47,6 +41,9 @@ const ResidentAuthorizations = () => {
   const [open, setOpen] = useState(false);
   const [guestListOpen, setGuestListOpen] = useState(false);
   const [detailAuth, setDetailAuth] = useState<Authorization | null>(null);
+  const [passAuth, setPassAuth] = useState<Authorization | null>(null);
+  const [residentApartment, setResidentApartment] = useState<string | null>(null);
+  const [residentName, setResidentName] = useState<string | null>(null);
   const [form, setForm] = useState({ visitor_name: '', visitor_document: '', authorized_date: '', authorized_until: '', purpose: '', vehicle_plate: '' });
   const [authPage, setAuthPage] = useState(1);
   const PAGE_SIZE = 10;
@@ -68,11 +65,13 @@ const ResidentAuthorizations = () => {
     const init = async () => {
       const { data: res } = await (supabase
         .from('residents')
-        .select('id') as any)
+        .select('id, apartment, name') as any)
         .eq('auth_user_id', user.id)
         .maybeSingle();
       if (!res) { setLoading(false); return; }
       setResidentId(res.id);
+      setResidentApartment(res.apartment || null);
+      setResidentName(res.name || null);
       await loadAuths(res.id);
       setLoading(false);
     };
@@ -355,6 +354,17 @@ const ResidentAuthorizations = () => {
                         </div>
                         {a.purpose && <p className="text-xs text-muted-foreground mt-1.5 truncate">{a.purpose}</p>}
                       </div>
+                      {a.status === 'approved' && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-9 w-9 shrink-0 rounded-xl text-primary hover:text-primary hover:bg-primary/10"
+                          title="Passe QR Code"
+                          onClick={(e) => { e.stopPropagation(); setPassAuth(a); }}
+                        >
+                          <QrCode className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </div>
                 );
@@ -479,6 +489,14 @@ const ResidentAuthorizations = () => {
           })()}
         </DialogContent>
       </Dialog>
+
+      <ResidentPassDialog
+        open={!!passAuth}
+        onOpenChange={(o) => { if (!o) setPassAuth(null); }}
+        authorization={passAuth}
+        apartment={residentApartment}
+        onSaved={() => { if (residentId) loadAuths(residentId); }}
+      />
     </div>
   );
 };

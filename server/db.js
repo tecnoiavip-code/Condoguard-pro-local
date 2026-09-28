@@ -304,12 +304,17 @@ CREATE TABLE IF NOT EXISTS visitor_authorizations (
   authorized_date TEXT NOT NULL,
   authorized_until TEXT,
   created_at TEXT,
+  entry_count INTEGER DEFAULT 0,
   purpose TEXT,
+  qr_code_token TEXT,
   resident_id TEXT NOT NULL,
   reviewed_by TEXT,
+  single_use INTEGER DEFAULT 1,
   staff_notes TEXT,
   status TEXT,
   updated_at TEXT,
+  used_at TEXT,
+  vehicle_model TEXT,
   vehicle_plate TEXT,
   visitor_document TEXT,
   visitor_name TEXT NOT NULL
@@ -342,6 +347,19 @@ if (!incidentCols.has('photo_url')) db.exec('ALTER TABLE incidents ADD COLUMN ph
 // Migração: entradas antigas podem ter entry_time NULL (o frontend não enviava a coluna).
 // Preenche com o horário da saída (ou agora) para manter os logs consistentes.
 db.prepare('UPDATE access_entries SET entry_time = COALESCE(exit_time, ?) WHERE entry_time IS NULL').run(now());
+
+// Migração assistida: convite virtual com QR Code (colunas novas em visitor_authorizations).
+const visitorAuthCols = new Set(db.prepare('PRAGMA table_info(visitor_authorizations)').all().map(c => c.name));
+if (!visitorAuthCols.has('qr_code_token')) db.exec('ALTER TABLE visitor_authorizations ADD COLUMN qr_code_token TEXT');
+if (!visitorAuthCols.has('entry_count')) db.exec('ALTER TABLE visitor_authorizations ADD COLUMN entry_count INTEGER DEFAULT 0');
+if (!visitorAuthCols.has('single_use')) db.exec('ALTER TABLE visitor_authorizations ADD COLUMN single_use INTEGER DEFAULT 1');
+if (!visitorAuthCols.has('used_at')) db.exec('ALTER TABLE visitor_authorizations ADD COLUMN used_at TEXT');
+if (!visitorAuthCols.has('vehicle_model')) db.exec('ALTER TABLE visitor_authorizations ADD COLUMN vehicle_model TEXT');
+// Gera o token para registros existentes (e normaliza vazios).
+db.prepare("UPDATE visitor_authorizations SET qr_code_token = ? WHERE qr_code_token IS NULL OR qr_code_token = ''").run(genId());
+// Garante default em todos (CREATE TABLE não reaplica em bancos antigos).
+db.prepare('UPDATE visitor_authorizations SET single_use = 1 WHERE single_use IS NULL').run();
+db.prepare('UPDATE visitor_authorizations SET entry_count = 0 WHERE entry_count IS NULL').run();
 
 export function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');

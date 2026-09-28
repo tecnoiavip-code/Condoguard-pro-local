@@ -6,8 +6,9 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { LogIn, LogOut, Camera, Upload, X, Plus, Pencil, Trash2, Search, Download, ShieldBan, ShieldCheck, Ban, AlertTriangle, FileSpreadsheet, ScanFace, Loader2, Wifi, WifiOff, ChevronDown } from 'lucide-react';
+import { LogIn, LogOut, Camera, Upload, X, Plus, Pencil, Trash2, Search, Download, ShieldBan, ShieldCheck, Ban, AlertTriangle, FileSpreadsheet, ScanFace, Loader2, Wifi, WifiOff, ChevronDown, QrCode } from 'lucide-react';
 import { DeviceCaptureStatus } from '@/components/DeviceCaptureStatus';
+import GuestPassScanner from '@/components/GuestPassScanner';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AccessEntry, Resident, Device } from '@/types';
 import { formatCPF, formatPlate, getStayAlert } from '@/lib/utils';
@@ -43,9 +44,10 @@ interface BlockedVisitor {
 export const NewRegistry = () => {
   const { residents } = useResidents();
   const { devices } = useDevices();
-  const { entries: allEntries, saveEntry, deleteEntry, searchSimilarEntries } = useAccessEntries();
+  const { entries: allEntries, saveEntry, deleteEntry, searchSimilarEntries, refresh: refreshEntries } = useAccessEntries();
   const entries = allEntries.filter(e => !e.exitTime);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [guestScannerOpen, setGuestScannerOpen] = useState(false);
   const [editingId, setEditingId] = useState<string>('');
   const [currentPage, setCurrentPage] = useState(1);
   const [currentPageAll, setCurrentPageAll] = useState(1);
@@ -636,6 +638,10 @@ export const NewRegistry = () => {
             {blockedVisitors.length > 0 && (
               <Badge variant="destructive" className="ml-1">{blockedVisitors.length}</Badge>
             )}
+          </Button>
+          <Button variant="outline" onClick={() => setGuestScannerOpen(true)} size="lg" className="gap-2">
+            <QrCode className="h-5 w-5" />
+            Bipar / Ler Convite QR Code
           </Button>
           <Button onClick={() => { setBadgeError(null); setIsDialogOpen(true); }} size="lg" className="gap-2 text-primary-foreground">
             <Plus className="h-5 w-5" />
@@ -1315,5 +1321,11 @@ export const NewRegistry = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <GuestPassScanner
+        open={guestScannerOpen}
+        onOpenChange={setGuestScannerOpen}
+        onEntryConfirmed={refreshEntries}
+      />
     </div>;
 };

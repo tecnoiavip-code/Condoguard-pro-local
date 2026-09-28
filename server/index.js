@@ -50,6 +50,7 @@ const BOOLEAN_COLUMNS = {
   portaria_equipment: ['is_active'],
   chat_messages: ['read'],
   notifications: ['read'],
+  visitor_authorizations: ['single_use'],
 };
 
 const COLUMNS = {};
@@ -472,6 +473,171 @@ app.post('/api/table/:table/upsert', authMiddleware, (req, res) => {
   }
   const error = errors.length > 0 ? { message: errors.join('; ') } : null;
   res.status(error ? 400 : 200).json({ data: inserted.map(r => sanitizeRead(table, r)), error });
+});
+
+// ---------- RPC: Convite Virtual com QR Code ----------
+const STAFF_ROLES = ['admin', 'security_guard', 'receptionist'];
+
+function currentUser(req) {
+  const token = getToken(req);
+  if (!token) return null;
+  const session = db.prepare('SELECT * FROM auth_sessions WHERE token = ?').get(token);
+  if (!session || new Date(session.expires_at).getTime() < Date.now()) return null;
+  return getUserById(session.user_id) || null;
+}
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const formatPT = (iso) => {
+  const [y, m, d] = String(iso).split('-');
+  return `${d}/${m}/${y}`;
+};
+
+function findGuestPassByToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  return db.prepare(`
+    SELECT va.*, r.apartment AS resident_apartment, r.name AS resident_full_name
+      FROM visitor_authorizations va
+      LEFT JOIN residents r ON r.id = va.resident_id
+     WHERE va.qr_code_token = ? COLLATE NOCASE
+  `).get(token.trim());
+}
+
+// Pública (anon): o convidado que abre /convite/:token não tem sessão.
+app.post('/api/rpc/validate_guest_pass', (req, res) => {
+  const { args = {} } = req.body || {};
+  const row = findGuestPassByToken(args._token);
+  const user = currentUser(req);
+  const isStaff = !!user && getUserRoles(user.id).some(r => STAFF_ROLES.includes(r));
+
+  if (!row) {
+    return res.json({ data: { found: false, valid: false, status: 'not_found', reason: 'Convite não encontrado' }, error: null });
+  }
+
+  const today = todayISO();
+  const d = String(row.authorized_date || '').slice(0, 10);
+  const until = row.authorized_until ? String(row.authorized_until).slice(0, 10) : d;
+
+  let status = 'today', reason = null, valid = true;
+  const used = row.single_use === 1 && row.used_at;
+  if (row.status === 'rejected') { status = 'rejected'; reason = 'Convite rejeitado'; valid = false; }
+  else if (used) { status = 'used'; reason = 'Convite já utilizado'; valid = false; }
+  else if (today < d) { status = 'future'; reason = 'Autorizado para data futura'; valid = false; }
+  else if (today > until) { status = 'expired'; reason = 'Convite expirado'; valid = false; }
+
+  return res.json({
+    data: {
+      found: true, valid, status, reason,
+      visitor_name: row.visitor_name,
+      apartment: row.resident_apartment || null,
+      authorized_date: d,
+      authorized_until: until,
+      purpose: row.purpose || null,
+      vehicle_plate: row.vehicle_plate || null,
+      single_use: row.single_use === 1,
+      used_at: row.used_at || null,
+      entry_count: row.entry_count || 0,
+      visitor_document: isStaff ? (row.visitor_document || null) : null,
+      resident_id: isStaff ? row.resident_id : null,
+      resident_name: isStaff ? (row.resident_full_name || null) : null,
+    },
+    error: null,
+  });
+});
+
+// Pública (anon): pré-check-in do convidado (o token é a credencial do portador).
+// Troca de modo (uso único / dia todo): somente o morador responsável autenticado.
+app.post('/api/rpc/update_guest_pass', (req, res) => {
+  const { args = {} } = req.body || {};
+  const row = findGuestPassByToken(args._token);
+  if (!row) {
+    return res.json({ data: { ok: false, message: 'Convite não encontrado' }, error: null });
+  }
+
+  if (args._single_use !== null && args._single_use !== undefined) {
+    const user = currentUser(req);
+    const roles = user ? getUserRoles(user.id) : [];
+    if (!roles.includes('resident')) {
+      return res.json({ data: { ok: false, message: 'Somente o morador pode alterar o modo do convite' }, error: null });
+    }
+    const owner = db.prepare('SELECT id FROM residents WHERE id = ? AND auth_user_id = ?').get(row.resident_id, user.id);
+    if (!owner) {
+      return res.json({ data: { ok: false, message: 'Este convite não pertence ao seu apartamento' }, error: null });
+    }
+    db.prepare('UPDATE visitor_authorizations SET single_use = ?, updated_at = ? WHERE id = ?')
+      .run(args._single_use === true ? 1 : 0, now(), row.id);
+  }
+
+  if (args._vehicle_plate || args._vehicle_model) {
+    db.prepare('UPDATE visitor_authorizations SET vehicle_plate = COALESCE(?, vehicle_plate), vehicle_model = COALESCE(?, vehicle_model), updated_at = ? WHERE id = ?')
+      .run(args._vehicle_plate || null, args._vehicle_model || null, now(), row.id);
+  }
+
+  return res.json({ data: { ok: true }, error: null });
+});
+
+// Staff autenticado: valida em segurança, cria access_entries e notifica.
+app.post('/api/rpc/redeem_guest_pass', authMiddleware, (req, res) => {
+  const roles = getUserRoles(req.user.id);
+  if (!roles.some(r => STAFF_ROLES.includes(r))) {
+    return res.json({ data: { ok: false, message: 'Acesso negado' }, error: null });
+  }
+
+  const { args = {} } = req.body || {};
+  const row = findGuestPassByToken(args._token);
+  if (!row) return res.json({ data: { ok: false, message: 'Convite não encontrado' }, error: null });
+  if (row.status === 'rejected') return res.json({ data: { ok: false, message: 'Convite rejeitado' }, error: null });
+  if (row.single_use === 1 && row.used_at) return res.json({ data: { ok: false, message: 'Convite já utilizado' }, error: null });
+
+  const today = todayISO();
+  const d = String(row.authorized_date || '').slice(0, 10);
+  const until = row.authorized_until ? String(row.authorized_until).slice(0, 10) : d;
+  if (today < d) return res.json({ data: { ok: false, message: `Convite válido a partir de ${formatPT(d)}` }, error: null });
+  if (today > until) return res.json({ data: { ok: false, message: 'Convite expirado' }, error: null });
+
+  if (row.visitor_document) {
+    const blocked = db.prepare('SELECT id FROM blocked_visitors WHERE visitor_document = ? AND is_active = 1').get(row.visitor_document);
+    if (blocked) return res.json({ data: { ok: false, message: 'Visitante está na lista de bloqueio' }, error: null });
+  }
+
+  const entryId = genId();
+  const plate = (args._vehicle_plate && String(args._vehicle_plate).trim()) || row.vehicle_plate || null;
+  const model = (args._vehicle_model && String(args._vehicle_model).trim()) || row.vehicle_model || null;
+
+  db.prepare(`INSERT INTO access_entries (
+    id, visitor_name, visitor_document, visitor_type, resident_id, resident_name, apartment,
+    purpose, entry_time, exit_time, vehicle_plate, vehicle_model, photo_url, registered_by
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    entryId, row.visitor_name, row.visitor_document || '', 'visitor', row.resident_id || null,
+    row.resident_full_name || null, row.resident_apartment || '',
+    row.purpose || null, now(), null, plate, model, args._photo_url || null, req.user.id
+  );
+
+  db.prepare('UPDATE visitor_authorizations SET entry_count = ?, used_at = ?, status = ?, updated_at = ? WHERE id = ?')
+    .run((row.entry_count || 0) + 1, now(), row.single_use === 1 ? 'expired' : row.status, now(), row.id);
+
+  if (row.resident_id) {
+    const resident = db.prepare('SELECT auth_user_id FROM residents WHERE id = ?').get(row.resident_id);
+    if (resident && resident.auth_user_id) {
+      notifyUser(resident.auth_user_id, 'Visita autorizada chegou', `${row.visitor_name} entrou no condomínio (convite QR)`, 'visitor', entryId);
+    }
+  }
+
+  const inserted = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(entryId);
+  notifyRealtime('access_entries', 'INSERT', sanitizeRead('access_entries', inserted));
+  const updatedAuth = db.prepare('SELECT * FROM visitor_authorizations WHERE id = ?').get(row.id);
+  notifyRealtime('visitor_authorizations', 'UPDATE', sanitizeRead('visitor_authorizations', updatedAuth));
+
+  return res.json({
+    data: {
+      ok: true, entry_id: entryId,
+      visitor_name: row.visitor_name,
+      visitor_document: row.visitor_document || null,
+      resident_name: row.resident_full_name || null,
+      apartment: row.resident_apartment || null,
+      vehicle_plate: plate,
+    },
+    error: null,
+  });
 });
 
 // ---------- RPC ----------

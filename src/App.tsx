@@ -12,6 +12,7 @@ import NotFound from "./pages/NotFound";
 import ResidentAuth from "./pages/resident/ResidentAuth";
 import ResidentApp from "./pages/resident/ResidentApp";
 import ResetPassword from "./pages/ResetPassword";
+import GuestPass from "./pages/guest/GuestPass";
 
 const App = () => (
   <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
@@ -26,6 +27,7 @@ const App = () => (
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/morador/login" element={<ResidentAuth />} />
             <Route path="/morador" element={<ResidentApp />} />
+            <Route path="/convite/:token" element={<GuestPass />} />
             <Route path="/" element={<ProtectedRoute><Index /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
