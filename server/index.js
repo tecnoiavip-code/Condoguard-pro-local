@@ -32,7 +32,7 @@ const KNOWN_TABLES = new Set([
   'access_entries', 'announcement_attachments', 'announcement_reads', 'announcements',
   'blocked_visitors', 'chat_messages', 'controlid_config', 'controlid_logs', 'devices',
   'incidents', 'mails', 'notifications', 'portaria_equipment', 'profiles', 'push_command_queue',
-  'push_subscriptions', 'realtime_events', 'residents', 'shift_equipment_checks', 'shifts',
+  'push_subscriptions', 'realtime_events', 'residents', 'shift_acknowledgments', 'shift_equipment_checks', 'shifts',
   'user_roles', 'vapid_keys', 'vehicles', 'visitor_authorizations',
 ]);
 

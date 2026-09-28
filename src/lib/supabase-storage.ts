@@ -146,6 +146,63 @@ export const supabaseStorage = {
     }
   },
 
+  // ---- Fotos de ocorrências (Livro de Ocorrências) ----
+  // Armazenadas no bucket resident-photos sob o prefixo `incidents/{id}/photo.*`
+
+  async getIncidentPhoto(incidentId: string): Promise<string> {
+    try {
+      const path = `incidents/${incidentId}`;
+      const { data: files } = await supabase.storage
+        .from('resident-photos')
+        .list(path);
+      if (files && files.length > 0) {
+        const { data: signedUrl } = await supabase.storage
+          .from('resident-photos')
+          .createSignedUrl(`${path}/${files[0].name}`, 3600);
+        return signedUrl || '';
+      }
+    } catch (err) {
+      console.error('Error in getIncidentPhoto:', err);
+    }
+    return '';
+  },
+
+  async uploadIncidentPhoto(incidentId: string, base64OrFile: string | File): Promise<boolean> {
+    try {
+      let file: File;
+      if (typeof base64OrFile === 'string') {
+        const res = await fetch(base64OrFile);
+        const blob = await res.blob();
+        file = new File([blob], 'photo.jpg', { type: blob.type || 'image/jpeg' });
+      } else {
+        file = base64OrFile;
+      }
+
+      const ext = file.name.split('.').pop() || 'jpg';
+      const folder = `incidents/${incidentId}`;
+      const path = `${folder}/photo.${ext}`;
+
+      const { data: files } = await supabase.storage.from('resident-photos').list(folder);
+      if (files && files.length > 0) {
+        await supabase.storage
+          .from('resident-photos')
+          .remove(files.map((f: any) => `${folder}/${f.name}`));
+      }
+
+      const { error } = await supabase.storage
+        .from('resident-photos')
+        .upload(path, file, { upsert: true });
+      if (error) {
+        console.error('Error uploading incident photo:', error);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error('Error in uploadIncidentPhoto:', err);
+      return false;
+    }
+  },
+
   async checkResidentDuplicate(resident: Resident, excludeId?: string): Promise<string | null> {
     const normalizedName = resident.name.trim().toUpperCase();
     const normalizedApt = resident.apartment.trim().toUpperCase();

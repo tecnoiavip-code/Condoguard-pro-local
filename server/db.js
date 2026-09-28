@@ -212,7 +212,19 @@ CREATE TABLE IF NOT EXISTS incidents (
   shift_id TEXT,
   status TEXT,
   title TEXT NOT NULL,
-  updated_at TEXT
+  updated_at TEXT,
+  apartment TEXT,
+  resident_id TEXT,
+  resident_name TEXT,
+  photo_url TEXT
+);
+
+CREATE TABLE IF NOT EXISTS shift_acknowledgments (
+  id TEXT PRIMARY KEY,
+  shift_id TEXT,
+  received_by TEXT NOT NULL,
+  notes TEXT,
+  acknowledged_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
@@ -319,6 +331,13 @@ db.exec(SCHEMA);
 const residentCols = new Set(db.prepare('PRAGMA table_info(residents)').all().map(c => c.name));
 if (!residentCols.has('contract_type')) db.exec('ALTER TABLE residents ADD COLUMN contract_type TEXT');
 if (!residentCols.has('contract_end_date')) db.exec('ALTER TABLE residents ADD COLUMN contract_end_date TEXT');
+
+// Migração assistida: novas colunas de ocorrências (Livro de Ocorrências).
+const incidentCols = new Set(db.prepare('PRAGMA table_info(incidents)').all().map(c => c.name));
+if (!incidentCols.has('apartment')) db.exec('ALTER TABLE incidents ADD COLUMN apartment TEXT');
+if (!incidentCols.has('resident_id')) db.exec('ALTER TABLE incidents ADD COLUMN resident_id TEXT');
+if (!incidentCols.has('resident_name')) db.exec('ALTER TABLE incidents ADD COLUMN resident_name TEXT');
+if (!incidentCols.has('photo_url')) db.exec('ALTER TABLE incidents ADD COLUMN photo_url TEXT');
 
 // Migração: entradas antigas podem ter entry_time NULL (o frontend não enviava a coluna).
 // Preenche com o horário da saída (ou agora) para manter os logs consistentes.

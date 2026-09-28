@@ -9,12 +9,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle, Clock } from 'lucide-react';
+import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle, Clock, ClipboardCheck, Image as ImageIcon } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAccessEntries } from '@/hooks/useAccessEntries';
+import { useResidents } from '@/hooks/useResidents';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabaseStorage } from '@/lib/supabase-storage';
 import { getStayDurationMinutes, staysAfter18h, formatDuration, DELIVERY_MAX_MINUTES, SERVICE_PROVIDER_MAX_HOURS } from '@/lib/utils';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -75,6 +78,19 @@ interface Incident {
   shift_id: string | null;
   created_at: string;
   resolved_at: string | null;
+  apartment?: string | null;
+  resident_id?: string | null;
+  resident_name?: string | null;
+  photo_url?: string | null;
+  photoUrl?: string | null;
+}
+
+interface ShiftAck {
+  id: string;
+  shift_id: string;
+  received_by: string;
+  notes: string | null;
+  acknowledged_at: string;
 }
 
 interface PortariaEquipment {
@@ -136,6 +152,26 @@ export const Reports = () => {
   const [incidentDescription, setIncidentDescription] = useState('');
   const [incidentSeverity, setIncidentSeverity] = useState<'low' | 'medium' | 'high' | 'critical'>('low');
   const [incidentPage, setIncidentPage] = useState(1);
+  const [incidentSearch, setIncidentSearch] = useState('');
+  // Ocorrência: apartamento/morador e foto de comprovação
+  const [incidentApartment, setIncidentApartment] = useState('');
+  const [incidentResidentId, setIncidentResidentId] = useState<string | null>(null);
+  const [incidentResidentName, setIncidentResidentName] = useState('');
+  const [incidentResidentQuery, setIncidentResidentQuery] = useState('');
+  const [incidentPhoto, setIncidentPhoto] = useState<File | null>(null);
+  const [incidentPhotoPreview, setIncidentPhotoPreview] = useState('');
+  const [incidentSaving, setIncidentSaving] = useState(false);
+  const [photoLightbox, setPhotoLightbox] = useState<string | null>(null);
+
+  // Passagem de plantão ("Ciente e Recebido")
+  const [ackDialogOpen, setAckDialogOpen] = useState(false);
+  const [ackName, setAckName] = useState('');
+  const [ackNotes, setAckNotes] = useState('');
+  const [currentShiftAck, setCurrentShiftAck] = useState<ShiftAck | null>(null);
+
+  const { user } = useAuth();
+  const userName = user?.user_metadata?.full_name || user?.email || '';
+  const { residents: allResidents } = useResidents();
 
   // View shift details
   const [viewingShift, setViewingShift] = useState<Shift | null>(null);
@@ -198,7 +234,21 @@ export const Reports = () => {
       .from('incidents')
       .select('*')
       .order('created_at', { ascending: false });
-    if (!error) setIncidents((data || []) as Incident[]);
+    if (error) return;
+    const enriched = await Promise.all((data || []).map(async (inc: any) => ({
+      ...inc,
+      photoUrl: inc.photo_url ? await supabaseStorage.getIncidentPhoto(inc.id) : null,
+    })));
+    setIncidents(enriched);
+  };
+
+  const loadCurrentShiftAck = async (shiftId: string) => {
+    const { data } = await supabase
+      .from('shift_acknowledgments')
+      .select('*')
+      .eq('shift_id', shiftId)
+      .maybeSingle();
+    setCurrentShiftAck((data as ShiftAck) || null);
   };
 
   const checkCurrentShift = async () => {
@@ -212,6 +262,7 @@ export const Reports = () => {
     if (data) {
       setCurrentShift(data as Shift);
       loadCurrentShiftChecks(data.id);
+      loadCurrentShiftAck(data.id);
     }
   };
 
@@ -267,6 +318,14 @@ export const Reports = () => {
     loadShifts();
     checkCurrentShift();
     loadPortariaEquipment();
+
+    // Passagem de plantão: se há pendências em aberto, convida o porteiro a assinar o "Ciente e Recebido"
+    const openPending = incidents.filter(i => i.status === 'open' || i.status === 'in_progress');
+    if (openPending.length > 0) {
+      setAckName(userName);
+      setAckNotes('');
+      setAckDialogOpen(true);
+    }
   };
 
   const handleEndShift = async () => {
@@ -285,27 +344,73 @@ export const Reports = () => {
     }
   };
 
+  const handleIncidentPhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    setIncidentPhoto(file);
+    setIncidentPhotoPreview(file ? URL.createObjectURL(file) : '');
+  };
+
   const handleCreateIncident = async () => {
     if (!incidentTitle.trim() || !incidentDescription.trim()) {
       toast.error('Preencha título e descrição');
       return;
     }
-    const { error } = await supabase.from('incidents').insert({
+    setIncidentSaving(true);
+    const { data, error } = await supabase.from('incidents').insert({
       title: incidentTitle,
       description: incidentDescription,
       severity: incidentSeverity,
       status: 'open',
       shift_id: currentShift?.id || null,
+      apartment: incidentApartment.trim() || null,
+      resident_id: incidentResidentId,
+      resident_name: incidentResidentName.trim() || null,
+      photo_url: incidentPhoto ? 'pending' : null,
+    }).select().single();
+    if (error || !data) {
+      toast.error(error?.message || 'Erro ao registrar ocorrência');
+      setIncidentSaving(false);
+      return;
+    }
+    if (incidentPhoto) {
+      const uploaded = await supabaseStorage.uploadIncidentPhoto(data.id, incidentPhoto);
+      if (uploaded) {
+        await supabase.from('incidents').update({ photo_url: 'photo' }).eq('id', data.id);
+      }
+    }
+    toast.success('Ocorrência registrada');
+    setIncidentTitle('');
+    setIncidentDescription('');
+    setIncidentSeverity('low');
+    setIncidentApartment('');
+    setIncidentResidentId(null);
+    setIncidentResidentName('');
+    setIncidentResidentQuery('');
+    setIncidentPhoto(null);
+    setIncidentPhotoPreview('');
+    loadIncidents();
+    setIncidentSaving(false);
+  };
+
+  const handleConfirmAck = async () => {
+    if (!currentShift || !ackName.trim()) {
+      toast.error('Informe o nome de quem recebe o turno');
+      return;
+    }
+    const { error } = await supabase.from('shift_acknowledgments').insert({
+      shift_id: currentShift.id,
+      received_by: ackName.trim(),
+      notes: ackNotes.trim() || null,
+      acknowledged_at: new Date().toISOString(),
     });
     if (error) {
-      toast.error('Erro ao registrar ocorrência');
-    } else {
-      toast.success('Ocorrência registrada');
-      setIncidentTitle('');
-      setIncidentDescription('');
-      setIncidentSeverity('low');
-      loadIncidents();
+      toast.error(error?.message || 'Erro ao confirmar recebimento');
+      return;
     }
+    toast.success('Turno recebido (Ciente e Recebido)');
+    setAckDialogOpen(false);
+    setAckNotes('');
+    loadCurrentShiftAck(currentShift.id);
   };
 
   const handleUpdateIncidentStatus = async (id: string, newStatus: string) => {
@@ -460,10 +565,27 @@ export const Reports = () => {
   if (correctedShiftPage !== shiftPage) setShiftPage(correctedShiftPage);
   const paginatedShifts = filteredShifts.slice((correctedShiftPage - 1) * ITEMS_PER_PAGE, correctedShiftPage * ITEMS_PER_PAGE);
 
-  const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id === currentShift.id);
+const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id === currentShift.id);
 
-  const paginatedIncidents = incidents.slice((incidentPage - 1) * ITEMS_PER_PAGE, incidentPage * ITEMS_PER_PAGE);
-  const totalIncidentPages = Math.ceil(incidents.length / ITEMS_PER_PAGE);
+  const openPendingIncidents = incidents.filter(i => i.status === 'open' || i.status === 'in_progress');
+
+  const incidentResidentSuggestions = allResidents
+    .filter(r => r.name.toLowerCase().includes(incidentResidentQuery.trim().toLowerCase()) && r.name !== incidentResidentName)
+    .slice(0, 6);
+
+  const filteredIncidents = incidents.filter(incident => {
+    const q = incidentSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      incident.title.toLowerCase().includes(q) ||
+      incident.description.toLowerCase().includes(q) ||
+      (incident.apartment || '').toLowerCase().includes(q) ||
+      (incident.resident_name || '').toLowerCase().includes(q)
+    );
+  });
+
+  const paginatedIncidents = filteredIncidents.slice((incidentPage - 1) * ITEMS_PER_PAGE, incidentPage * ITEMS_PER_PAGE);
+  const totalIncidentPages = Math.ceil(filteredIncidents.length / ITEMS_PER_PAGE);
 
   const paginatedEquipment = portariaEquipment.slice((equipmentPage - 1) * ITEMS_PER_PAGE, equipmentPage * ITEMS_PER_PAGE);
   const totalEquipmentPages = Math.ceil(portariaEquipment.length / ITEMS_PER_PAGE);
@@ -662,6 +784,67 @@ export const Reports = () => {
                     </div>
                   )}
 
+                  {/* Passagem de Plantão — Termo "Ciente e Recebido" */}
+                  <div className="p-4 border rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-semibold flex items-center gap-2">
+                        <ClipboardCheck className="h-4 w-4" />
+                        Passagem de Plantão
+                      </h4>
+                      {currentShiftAck ? (
+                        <Badge className="bg-success/15 text-success border-success/30">
+                          Ciente e Recebido
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline">Pendente de confirmação</Badge>
+                      )}
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      {openPendingIncidents.length === 0
+                        ? 'Nenhuma pendência em aberto no momento.'
+                        : `${openPendingIncidents.length} pendência(s) em aberto aguardando confirmação.`}
+                    </p>
+                    {openPendingIncidents.length > 0 && (
+                      <ul className="space-y-1 mt-2 mb-3 max-h-32 overflow-y-auto">
+                        {openPendingIncidents.slice(0, 6).map(inc => (
+                          <li key={inc.id} className="text-sm flex items-center justify-between">
+                            <span>
+                              {inc.title}
+                              {inc.apartment && <span className="text-muted-foreground"> ({inc.apartment})</span>}
+                            </span>
+                            <Badge variant={getSeverityColor(inc.severity)} className="text-[10px]">
+                              {getSeverityLabel(inc.severity)}
+                            </Badge>
+                          </li>
+                        ))}
+                        {openPendingIncidents.length > 6 && (
+                          <li className="text-xs text-muted-foreground">
+                            + {openPendingIncidents.length - 6} outra(s) pendência(s) — veja a aba Ocorrências
+                          </li>
+                        )}
+                      </ul>
+                    )}
+                    {currentShiftAck ? (
+                      <p className="text-xs text-muted-foreground">
+                        Recebido por <strong>{currentShiftAck.received_by}</strong> em{' '}
+                        {format(new Date(currentShiftAck.acknowledged_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                      </p>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setAckName(userName);
+                          setAckNotes('');
+                          setAckDialogOpen(true);
+                        }}
+                      >
+                        <ClipboardCheck className="mr-2 h-4 w-4" />
+                        Receber Turno (Ciente)
+                      </Button>
+                    )}
+                  </div>
+
                   <div className="flex gap-2 flex-wrap">
                     <Button
                       variant="outline"
@@ -851,23 +1034,128 @@ export const Reports = () => {
                   </SelectContent>
                 </Select>
               </div>
-              <Button onClick={handleCreateIncident}>
+              <div>
+                <Label>Apartamento (opcional)</Label>
+                <Input
+                  value={incidentApartment}
+                  onChange={e => setIncidentApartment(e.target.value)}
+                  placeholder="Ex: Apto 42B"
+                />
+              </div>
+              <div>
+                <Label>Morador (opcional)</Label>
+                <Input
+                  value={incidentResidentName}
+                  onChange={e => {
+                    setIncidentResidentName(e.target.value);
+                    setIncidentResidentQuery(e.target.value);
+                    setIncidentResidentId(null);
+                  }}
+                  placeholder="Digite o nome para vincular ao cadastro..."
+                />
+                {incidentResidentQuery.trim() && incidentResidentSuggestions.length > 0 && (
+                  <div className="mt-1 border rounded-md divide-y overflow-hidden">
+                    {incidentResidentSuggestions.map(r => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => {
+                          setIncidentResidentName(r.name);
+                          setIncidentResidentQuery('');
+                          setIncidentResidentId(r.id);
+                          if (!incidentApartment.trim()) setIncidentApartment(r.apartment);
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
+                      >
+                        {r.name} <span className="text-muted-foreground">({r.apartment})</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {incidentResidentName && !incidentResidentId && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Morador sem vínculo com cadastro (texto livre).
+                  </p>
+                )}
+              </div>
+              <div>
+                <Label className="flex items-center gap-2">
+                  <ImageIcon className="h-4 w-4" />
+                  Foto de comprovação (opcional)
+                </Label>
+                <div className="flex items-center gap-3 mt-1">
+                  <Input type="file" accept="image/*" onChange={handleIncidentPhotoChange} className="file:text-sm" />
+                  {incidentPhotoPreview && (
+                    <img src={incidentPhotoPreview} alt="Prévia" className="h-14 w-14 rounded-md border object-cover" />
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Portão batido, vidro quebrado, vazamento... tire a foto e anexe como prova.
+                </p>
+              </div>
+              <Button onClick={handleCreateIncident} disabled={incidentSaving}>
                 <AlertTriangle className="mr-2 h-4 w-4" />
-                Registrar Ocorrência
+                {incidentSaving ? 'Registrando...' : 'Registrar Ocorrência'}
               </Button>
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader><CardTitle>Lista de Ocorrências</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                <span>Lista de Ocorrências</span>
+                <span className="text-sm font-normal text-muted-foreground">
+                  {filteredIncidents.length} ocorrência(s)
+                </span>
+              </CardTitle>
+            </CardHeader>
             <CardContent>
+              <div className="relative mb-4">
+                <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por título, apartamento, morador ou descrição..."
+                  value={incidentSearch}
+                  onChange={e => {
+                    setIncidentSearch(e.target.value);
+                    setIncidentPage(1);
+                  }}
+                  className="pl-10"
+                />
+              </div>
               <div className="space-y-4">
-                {paginatedIncidents.map(incident => (
+                {paginatedIncidents.length === 0 ? (
+                  <p className="text-center text-muted-foreground py-8">
+                    Nenhuma ocorrência encontrada{incidentSearch ? ` para "${incidentSearch}"` : ''}.
+                  </p>
+                ) : paginatedIncidents.map(incident => (
                   <div key={incident.id} className="border rounded-lg p-4">
                     <div className="flex justify-between items-start mb-2">
                       <div className="flex-1">
-                        <h3 className="font-semibold">{incident.title}</h3>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="font-semibold">{incident.title}</h3>
+                          {(incident.apartment || incident.resident_name) && (
+                            <Badge variant="outline" className="text-[10px] font-normal">
+                              {incident.apartment && <span>{incident.apartment}</span>}
+                              {incident.apartment && incident.resident_name && <span> · </span>}
+                              {incident.resident_name && <span>{incident.resident_name}</span>}
+                            </Badge>
+                          )}
+                        </div>
                         <p className="text-sm text-muted-foreground mt-1">{incident.description}</p>
+                        {incident.photoUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setPhotoLightbox(incident.photoUrl || null)}
+                            className="mt-2 block"
+                            title="Ampliar foto de comprovação"
+                          >
+                            <img
+                              src={incident.photoUrl}
+                              alt="Foto da ocorrência"
+                              className="h-24 w-24 rounded-md border object-cover"
+                            />
+                          </button>
+                        )}
                         <p className="text-xs text-muted-foreground mt-2">
                           {format(new Date(incident.created_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
                         </p>
@@ -1309,6 +1597,71 @@ export const Reports = () => {
               Confirmar Checklist
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Passagem de Plantão — Termo "Ciente e Recebido" */}
+      <Dialog open={ackDialogOpen} onOpenChange={setAckDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ClipboardCheck className="h-5 w-5" />
+              Passagem de Plantão
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm font-medium mb-2">Termo de ciência e recebimento do turno</p>
+            <div className="space-y-1 mb-3 max-h-40 overflow-y-auto rounded-md border p-3">
+              {openPendingIncidents.length === 0 && (
+                <p className="text-sm text-muted-foreground">Nenhuma pendência em aberto.</p>
+              )}
+              {openPendingIncidents.map(inc => (
+                <div key={inc.id} className="text-sm flex items-center justify-between">
+                  <span>
+                    {inc.title}
+                    {inc.apartment && <span className="text-muted-foreground"> ({inc.apartment})</span>}
+                  </span>
+                  <Badge variant={getSeverityColor(inc.severity)} className="text-[10px]">
+                    {getSeverityLabel(inc.severity)}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+            <div>
+              <Label>Recebido por (responsável):</Label>
+              <Input
+                value={ackName}
+                onChange={e => setAckName(e.target.value)}
+                placeholder="Nome de quem recebe o turno..."
+              />
+            </div>
+            <div>
+              <Label>Observações (opcional)</Label>
+              <Textarea
+                value={ackNotes}
+                onChange={e => setAckNotes(e.target.value)}
+                placeholder="Resumo do que foi repassado..."
+                className="min-h-[80px]"
+              />
+            </div>
+            <Button className="w-full" onClick={handleConfirmAck} disabled={!ackName.trim()}>
+              <ClipboardCheck className="mr-2 h-4 w-4" />
+              Confirmar Ciente e Recebido
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Foto de comprovação — zoom */}
+      <Dialog open={!!photoLightbox} onOpenChange={o => { if (!o) setPhotoLightbox(null); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ImageIcon className="h-5 w-5" />
+              Foto de comprovação
+            </DialogTitle>
+          </DialogHeader>
+          <img src={photoLightbox || ''} alt="Foto da ocorrência" className="w-full rounded-md border" />
         </DialogContent>
       </Dialog>
     </div>

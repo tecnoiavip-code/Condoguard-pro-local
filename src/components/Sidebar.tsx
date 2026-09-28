@@ -17,7 +17,7 @@ const navItems = [
   { id: 'staff-chat', label: 'Chat Moradores', icon: MessageSquare, group: 'Comunicação' },
   { id: 'authorizations', label: 'Autorizações', icon: Shield, group: 'Comunicação' },
   { id: 'announcements', label: 'Comunicados', icon: Megaphone, group: 'Comunicação' },
-  { id: 'reports', label: 'Relatórios', icon: ClipboardList, group: 'Operações' },
+  { id: 'reports', label: 'Plantão & Ocorrências', icon: ClipboardList, group: 'Operações' },
   { id: 'devices', label: 'Dispositivos', icon: Smartphone, group: 'Sistema' },
   { id: 'logs', label: 'Logs de Acesso', icon: ScrollText, group: 'Sistema' },
   { id: 'settings', label: 'Configurações', icon: Settings, group: 'Sistema' },
