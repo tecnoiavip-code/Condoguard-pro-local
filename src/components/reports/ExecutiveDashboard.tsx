@@ -151,18 +151,19 @@ export const ExecutiveDashboard = ({
     });
   }, [entries, mails, incidents, residents, period, customFrom, customTo, now]);
 
-  const comparison = useMemo(() => {
-    const current = metrics.hourly.map((row, index) => ({
-      hour: row.hour,
-      Atual: row.Visitantes + row.Entregadores + row.Prestadores,
-      Anterior: metrics.hourlyPrevious[index]
-        ? metrics.hourlyPrevious[index].Visitantes +
-          metrics.hourlyPrevious[index].Entregadores +
-          metrics.hourlyPrevious[index].Prestadores
-        : 0,
-    }));
-    return comparison;
-  }, [metrics.hourly, metrics.hourlyPrevious]);
+  const comparison = useMemo(
+    () =>
+      metrics.hourly.map((row, index) => ({
+        hour: row.hour,
+        Atual: row.Visitantes + row.Entregadores + row.Prestadores,
+        Anterior: metrics.hourlyPrevious[index]
+          ? metrics.hourlyPrevious[index].Visitantes +
+            metrics.hourlyPrevious[index].Entregadores +
+            metrics.hourlyPrevious[index].Prestadores
+          : 0,
+      })),
+    [metrics.hourly, metrics.hourlyPrevious]
+  );
 
   const peak = useMemo(() => {
     let best = { hour: '—', count: -1 };
