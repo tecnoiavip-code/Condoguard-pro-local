@@ -354,7 +354,7 @@ const ResidentAuthorizations = () => {
                         </div>
                         {a.purpose && <p className="text-xs text-muted-foreground mt-1.5 truncate">{a.purpose}</p>}
                       </div>
-                      {a.status === 'approved' && (
+                      {(a.status === 'approved' || a.status === 'pending') && (
                         <Button
                           size="icon"
                           variant="ghost"
