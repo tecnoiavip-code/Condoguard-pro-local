@@ -2,15 +2,29 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Settings as SettingsIcon, Trash2, Download, Upload, Send, FileText, FileSpreadsheet, Lock } from 'lucide-react';
+import { Settings as SettingsIcon, Trash2, Download, Upload, Send, FileText, FileSpreadsheet, Lock, BarChart3 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { supabaseStorage } from '@/lib/supabase-storage';
 import { useResidents } from '@/hooks/useResidents';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { parseBackupPayload } from '@/lib/backup-import';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ExecutiveDashboard } from '@/components/reports/ExecutiveDashboard';
+import { exportExecutiveReport, type EquipmentCheckRow } from '@/lib/executive-pdf-export';
+import {
+  computeExecutiveMetrics,
+  previousRangeOf,
+  resolveRange,
+  EXECUTIVE_PERIOD_LABELS,
+  type ExecutivePeriod,
+} from '@/lib/executive-metrics';
+import { useAccessEntries } from '@/hooks/useAccessEntries';
+import { useAuth } from '@/contexts/AuthContext';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 
 // Funções auxiliares para CSV
 const arrayToCSV = (data: any[], headers: string[]) => {
@@ -64,6 +78,19 @@ export const Settings = () => {
   const [isIntegrationsUnlocked, setIsIntegrationsUnlocked] = useState(false);
   const [integrationPassword, setIntegrationPassword] = useState('');
   const [passwordError, setPasswordError] = useState(false);
+
+  // ========== PAINEL EXECUTIVO (BI) ==========
+  const [settingsTab, setSettingsTab] = useState<'geral' | 'executive'>('geral');
+  const [executivePeriod, setExecutivePeriod] = useState<ExecutivePeriod>('30d');
+  const [executiveFrom, setExecutiveFrom] = useState('');
+  const [executiveTo, setExecutiveTo] = useState('');
+  const [executivePdfLoading, setExecutivePdfLoading] = useState(false);
+  const [executiveMails, setExecutiveMails] = useState<any[]>([]);
+  const [executiveIncidents, setExecutiveIncidents] = useState<any[]>([]);
+  const [executiveEquipment, setExecutiveEquipment] = useState<EquipmentCheckRow[]>([]);
+  const { entries: accessEntries } = useAccessEntries();
+  const { user } = useAuth();
+  const userName = user?.user_metadata?.full_name || user?.email || '';
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
   let webhookHost = window.location.host || '127.0.0.1:8080';
@@ -798,6 +825,90 @@ export const Settings = () => {
     setTimeout(() => window.location.reload(), 1500);
   };
 
+  // ========== PAINEL EXECUTIVO (BI) ==========
+  useEffect(() => {
+    if (settingsTab !== 'executive') return;
+    let cancelled = false;
+
+    const loadExecutiveData = async () => {
+      const [mailsRes, checksRes, equipmentRes, shiftsRes, incidentsRes] = await Promise.all([
+        supabase.from('mails').select('*'),
+        supabase.from('shift_equipment_checks').select('*'),
+        supabase.from('portaria_equipment').select('id, name'),
+        supabase.from('shifts').select('id, shift_start, shift_type'),
+        supabase
+          .from('incidents')
+          .select('id, title, description, severity, status, created_at, resolved_at, apartment, resident_name'),
+      ]);
+      if (cancelled) return;
+      if (!mailsRes.error) setExecutiveMails(mailsRes.data || []);
+      if (!incidentsRes.error) setExecutiveIncidents(incidentsRes.data || []);
+      if (!checksRes.error) {
+        const nameById = new Map<string, string>(
+          (equipmentRes.data || []).map((eq: any) => [eq.id, eq.name])
+        );
+        const shiftById = new Map<string, any>(
+          (shiftsRes.data || []).map((shift: any) => [shift.id, shift])
+        );
+        setExecutiveEquipment(
+          (checksRes.data || []).map((check: any) => {
+            const shift = shiftById.get(check.shift_id);
+            return {
+              shift_date: shift?.shift_start
+                ? format(new Date(shift.shift_start), 'dd/MM/yyyy', { locale: ptBR })
+                : '—',
+              shift_type: shift?.shift_type || 'diurno',
+              equipment_name: nameById.get(check.equipment_id) || 'Equipamento',
+              status: check.status || 'functional',
+              notes: check.notes,
+            };
+          })
+        );
+      }
+    };
+
+    loadExecutiveData();
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsTab]);
+
+  const executiveRange = useMemo(
+    () => resolveRange(executivePeriod, { from: executiveFrom, to: executiveTo }),
+    [executivePeriod, executiveFrom, executiveTo]
+  );
+
+  const executiveMetrics = useMemo(
+    () =>
+      computeExecutiveMetrics({
+        entries: accessEntries as any,
+        mails: executiveMails as any,
+        incidents: executiveIncidents as any,
+        residents: residents as any,
+        period: executiveRange,
+        previousPeriod: previousRangeOf(executiveRange),
+      }),
+    [accessEntries, executiveMails, executiveIncidents, residents, executiveRange]
+  );
+
+  const handleExportExecutivePDF = () => {
+    setExecutivePdfLoading(true);
+    try {
+      exportExecutiveReport({
+        metrics: executiveMetrics,
+        condominiumName: 'Condomínio',
+        equipmentChecks: executiveEquipment,
+        preparedBy: userName,
+      });
+      toast.success('Relatório executivo gerado com sucesso');
+    } catch (err) {
+      console.error('Erro ao gerar relatório executivo:', err);
+      toast.error('Não foi possível gerar o relatório executivo');
+    } finally {
+      setExecutivePdfLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div>
@@ -805,6 +916,83 @@ export const Settings = () => {
         <p className="text-muted-foreground">Gerencie as configurações do sistema</p>
       </div>
 
+      <div className="flex gap-2 border-b flex-wrap">
+        <Button variant={settingsTab === 'geral' ? 'default' : 'ghost'} onClick={() => setSettingsTab('geral')}>
+          <SettingsIcon className="mr-2 h-4 w-4" />
+          Geral
+        </Button>
+        <Button variant={settingsTab === 'executive' ? 'default' : 'ghost'} onClick={() => setSettingsTab('executive')}>
+          <BarChart3 className="mr-2 h-4 w-4" />
+          Painel Executivo (BI)
+        </Button>
+      </div>
+
+      {settingsTab === 'executive' && (
+        <div className="space-y-6">
+          <Card>
+            <CardContent className="p-4 flex flex-wrap items-end justify-between gap-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Período</Label>
+                  <Select value={executivePeriod} onValueChange={(v) => setExecutivePeriod(v as ExecutivePeriod)}>
+                    <SelectTrigger className="w-[190px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(EXECUTIVE_PERIOD_LABELS) as ExecutivePeriod[]).map((key) => (
+                        <SelectItem key={key} value={key}>
+                          {EXECUTIVE_PERIOD_LABELS[key]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {executivePeriod === 'custom' && (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">De</Label>
+                      <Input
+                        type="date"
+                        value={executiveFrom}
+                        onChange={(e) => setExecutiveFrom(e.target.value)}
+                        className="w-[150px]"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Até</Label>
+                      <Input
+                        type="date"
+                        value={executiveTo}
+                        onChange={(e) => setExecutiveTo(e.target.value)}
+                        className="w-[150px]"
+                      />
+                    </div>
+                  </>
+                )}
+                <p className="text-xs text-muted-foreground pb-2">
+                  Apuração: {executiveMetrics.periodLabel} · {executiveMetrics.daysInPeriod} dias
+                </p>
+              </div>
+              <Button onClick={handleExportExecutivePDF} disabled={executivePdfLoading}>
+                <Download className="mr-2 h-4 w-4" />
+                {executivePdfLoading ? 'Gerando...' : 'Exportar Relatório para Assembleia (PDF)'}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <ExecutiveDashboard
+            entries={accessEntries as any}
+            mails={executiveMails as any}
+            incidents={executiveIncidents as any}
+            residents={residents as any}
+            period={executivePeriod}
+            customFrom={executiveFrom}
+            customTo={executiveTo}
+          />
+        </div>
+      )}
+
+      {settingsTab === 'geral' && (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
@@ -1003,6 +1191,7 @@ export const Settings = () => {
           </CardContent>
         </Card>
       </div>
+      )}
     </div>
   );
 };
