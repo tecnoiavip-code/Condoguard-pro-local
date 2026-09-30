@@ -9,7 +9,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle, Clock, ClipboardCheck, Image as ImageIcon } from 'lucide-react';
+import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle, Clock, ClipboardCheck, Image as ImageIcon, BarChart3 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -23,6 +23,15 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { ExecutiveDashboard } from '@/components/reports/ExecutiveDashboard';
+import { exportExecutiveReport, type EquipmentCheckRow } from '@/lib/executive-pdf-export';
+import {
+  computeExecutiveMetrics,
+  previousRangeOf,
+  resolveRange,
+  EXECUTIVE_PERIOD_LABELS,
+  type ExecutivePeriod,
+} from '@/lib/executive-metrics';
 
 type StayPeriod = '24h' | '7d' | '30d' | 'all';
 type StayTypeFilter = 'all' | 'delivery' | 'service_provider';
@@ -117,7 +126,15 @@ interface ShiftEquipmentCheck {
 }
 
 export const Reports = () => {
-  const [activeTab, setActiveTab] = useState<'shifts' | 'incidents' | 'equipment' | 'permanencias'>('shifts');
+  const [activeTab, setActiveTab] = useState<'shifts' | 'incidents' | 'equipment' | 'permanencias' | 'executive'>('shifts');
+
+  // Painel Executivo (BI) state
+  const [executivePeriod, setExecutivePeriod] = useState<ExecutivePeriod>('30d');
+  const [executiveFrom, setExecutiveFrom] = useState('');
+  const [executiveTo, setExecutiveTo] = useState('');
+  const [executivePdfLoading, setExecutivePdfLoading] = useState(false);
+  const [executiveMails, setExecutiveMails] = useState<any[]>([]);
+  const [executiveEquipment, setExecutiveEquipment] = useState<EquipmentCheckRow[]>([]);
 
   // Relatório de permanências prolongadas
   const { entries: accessEntries } = useAccessEntries();
@@ -187,6 +204,47 @@ export const Reports = () => {
     checkCurrentShift();
     autoDetectShiftType();
   }, []);
+
+  // Dados exclusivos do Painel Executivo: encomendas + checagens de equipamento
+  useEffect(() => {
+    if (activeTab !== 'executive') return;
+    let cancelled = false;
+
+    const loadExecutiveData = async () => {
+      const [mailsRes, checksRes, equipmentRes] = await Promise.all([
+        supabase.from('mails').select('*'),
+        supabase.from('shift_equipment_checks').select('*'),
+        supabase.from('portaria_equipment').select('id, name'),
+      ]);
+      if (cancelled) return;
+      if (!mailsRes.error) setExecutiveMails(mailsRes.data || []);
+      if (!checksRes.error) {
+        const nameById = new Map<string, string>(
+          (equipmentRes.data || []).map((eq: any) => [eq.id, eq.name])
+        );
+        const shiftById = new Map<string, Shift>(
+          shifts.map((shift) => [shift.id, shift])
+        );
+        setExecutiveEquipment(
+          (checksRes.data || []).map((check: any) => {
+            const shift = shiftById.get(check.shift_id);
+            return {
+              shift_date: shift
+                ? format(new Date(shift.shift_start), 'dd/MM/yyyy', { locale: ptBR })
+                : '—',
+              shift_type: shift?.shift_type || 'diurno',
+              equipment_name: nameById.get(check.equipment_id) || 'Equipamento',
+              status: check.status || 'functional',
+              notes: check.notes,
+            };
+          })
+        );
+      }
+    };
+
+    loadExecutiveData();
+    return () => { cancelled = true; };
+  }, [activeTab, shifts]);
 
   const autoDetectShiftType = () => {
     const now = new Date();
@@ -685,6 +743,44 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
     toast.success('CSV gerado com sucesso');
   };
 
+  // ========== PAINEL EXECUTIVO (BI) ==========
+
+  const executiveRange = useMemo(
+    () => resolveRange(executivePeriod, { from: executiveFrom, to: executiveTo }),
+    [executivePeriod, executiveFrom, executiveTo]
+  );
+
+  const executiveMetrics = useMemo(
+    () =>
+      computeExecutiveMetrics({
+        entries: accessEntries as any,
+        mails: executiveMails as any,
+        incidents: incidents as any,
+        residents: allResidents as any,
+        period: executiveRange,
+        previousPeriod: previousRangeOf(executiveRange),
+      }),
+    [accessEntries, executiveMails, incidents, allResidents, executiveRange]
+  );
+
+  const handleExportExecutivePDF = () => {
+    setExecutivePdfLoading(true);
+    try {
+      exportExecutiveReport({
+        metrics: executiveMetrics,
+        condominiumName: 'Condomínio',
+        equipmentChecks: executiveEquipment,
+        preparedBy: userName,
+      });
+      toast.success('Relatório executivo gerado com sucesso');
+    } catch (err) {
+      console.error('Erro ao gerar relatório executivo:', err);
+      toast.error('Não foi possível gerar o relatório executivo');
+    } finally {
+      setExecutivePdfLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -708,7 +804,77 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
           <Clock className="mr-2 h-4 w-4" />
           Permanências Prolongadas
         </Button>
+        <Button variant={activeTab === 'executive' ? 'default' : 'ghost'} onClick={() => setActiveTab('executive')}>
+          <BarChart3 className="mr-2 h-4 w-4" />
+          Painel Executivo (BI)
+        </Button>
       </div>
+
+      {/* ========== PAINEL EXECUTIVO (BI) ========== */}
+      {activeTab === 'executive' && (
+        <div className="space-y-6">
+          <Card>
+            <CardContent className="p-4 flex flex-wrap items-end justify-between gap-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Período</Label>
+                  <Select value={executivePeriod} onValueChange={(v) => setExecutivePeriod(v as ExecutivePeriod)}>
+                    <SelectTrigger className="w-[190px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(EXECUTIVE_PERIOD_LABELS) as ExecutivePeriod[]).map((key) => (
+                        <SelectItem key={key} value={key}>
+                          {EXECUTIVE_PERIOD_LABELS[key]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {executivePeriod === 'custom' && (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">De</Label>
+                      <Input
+                        type="date"
+                        value={executiveFrom}
+                        onChange={(e) => setExecutiveFrom(e.target.value)}
+                        className="w-[150px]"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Até</Label>
+                      <Input
+                        type="date"
+                        value={executiveTo}
+                        onChange={(e) => setExecutiveTo(e.target.value)}
+                        className="w-[150px]"
+                      />
+                    </div>
+                  </>
+                )}
+                <p className="text-xs text-muted-foreground pb-2">
+                  Apuração: {executiveMetrics.periodLabel} · {executiveMetrics.daysInPeriod} dias
+                </p>
+              </div>
+              <Button onClick={handleExportExecutivePDF} disabled={executivePdfLoading}>
+                <Download className="mr-2 h-4 w-4" />
+                {executivePdfLoading ? 'Gerando...' : 'Exportar Relatório para Assembleia (PDF)'}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <ExecutiveDashboard
+            entries={accessEntries as any}
+            mails={executiveMails as any}
+            incidents={incidents as any}
+            residents={allResidents as any}
+            period={executivePeriod}
+            customFrom={executiveFrom}
+            customTo={executiveTo}
+          />
+        </div>
+      )}
 
       {/* ========== PLANTÕES ========== */}
       {activeTab === 'shifts' && (
