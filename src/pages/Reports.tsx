@@ -9,7 +9,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle, Clock, ClipboardCheck, Image as ImageIcon } from 'lucide-react';
+import { ClipboardList, Users, AlertTriangle, Plus, Wrench, Download, Search, X, FileSpreadsheet, Sun, Moon, CheckCircle, XCircle, AlertCircle, Clock, ClipboardCheck, Image as ImageIcon, Pencil, Trash2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -144,6 +144,7 @@ export const Reports = () => {
   const [isEquipmentDialogOpen, setIsEquipmentDialogOpen] = useState(false);
   const [isChecklistDialogOpen, setIsChecklistDialogOpen] = useState(false);
   const [equipmentFormData, setEquipmentFormData] = useState({ name: '', description: '' });
+  const [editingEquipment, setEditingEquipment] = useState<PortariaEquipment | null>(null);
   const [equipmentPage, setEquipmentPage] = useState(1);
 
   // Incidents state
@@ -427,24 +428,60 @@ export const Reports = () => {
     }
   };
 
-  const handleCreateEquipment = async () => {
+  const handleOpenCreateEquipment = () => {
+    setEditingEquipment(null);
+    setEquipmentFormData({ name: '', description: '' });
+    setIsEquipmentDialogOpen(true);
+  };
+
+  const handleOpenEditEquipment = (equipment: PortariaEquipment) => {
+    setEditingEquipment(equipment);
+    setEquipmentFormData({ name: equipment.name, description: equipment.description || '' });
+    setIsEquipmentDialogOpen(true);
+  };
+
+  const handleEquipmentDialogChange = (open: boolean) => {
+    setIsEquipmentDialogOpen(open);
+    if (!open) {
+      setEditingEquipment(null);
+      setEquipmentFormData({ name: '', description: '' });
+    }
+  };
+
+  const handleSaveEquipment = async () => {
     if (!equipmentFormData.name.trim()) {
       toast.error('Informe o nome do equipamento');
       return;
     }
-    const { error } = await supabase.from('portaria_equipment').insert({
-      name: equipmentFormData.name.toUpperCase(),
-      description: equipmentFormData.description || null,
-    });
-    if (error) {
-      toast.error('Erro ao cadastrar equipamento');
+    if (editingEquipment) {
+      const { error } = await supabase
+        .from('portaria_equipment')
+        .update({
+          name: equipmentFormData.name.toUpperCase(),
+          description: equipmentFormData.description || null,
+        })
+        .eq('id', editingEquipment.id);
+      if (error) {
+        toast.error('Erro ao atualizar equipamento');
+        return;
+      }
+      toast.success('Equipamento atualizado');
     } else {
+      const { error } = await supabase.from('portaria_equipment').insert({
+        name: equipmentFormData.name.toUpperCase(),
+        description: equipmentFormData.description || null,
+      });
+      if (error) {
+        toast.error('Erro ao cadastrar equipamento');
+        return;
+      }
       toast.success('Equipamento cadastrado');
-      setEquipmentFormData({ name: '', description: '' });
-      setIsEquipmentDialogOpen(false);
-      loadPortariaEquipment();
-      loadAllPortariaEquipment();
     }
+    setEquipmentFormData({ name: '', description: '' });
+    setEditingEquipment(null);
+    setIsEquipmentDialogOpen(false);
+    loadPortariaEquipment();
+    loadAllPortariaEquipment();
   };
 
   const handleToggleEquipment = async (id: string, isActive: boolean) => {
@@ -457,6 +494,34 @@ export const Reports = () => {
       loadPortariaEquipment();
       loadAllPortariaEquipment();
     }
+  };
+
+  const handleDeleteEquipment = async (id: string) => {
+    const equipment = portariaEquipment.find(e => e.id === id);
+    if (!equipment) return;
+    const { count } = await supabase
+      .from('shift_equipment_checks')
+      .select('id', { count: 'exact', head: true })
+      .eq('equipment_id', id);
+    const historico = count || 0;
+    const aviso = historico > 0
+      ? `Tem certeza? "${equipment.name}" possui ${historico} registro(s) de checklist em plantões, que também serão removidos. Para manter o histórico, prefira "Desativar".`
+      : `Tem certeza que deseja excluir o equipamento "${equipment.name}"?`;
+    if (!confirm(aviso)) return;
+    // Remove os checklists vinculados: a base local não aplica ON DELETE CASCADE.
+    await supabase.from('shift_equipment_checks').delete().eq('equipment_id', id);
+    const { error } = await supabase.from('portaria_equipment').delete().eq('id', id);
+    if (error) {
+      toast.error('Erro ao excluir equipamento');
+      return;
+    }
+    toast.success('Equipamento excluído');
+    if (editingEquipment?.id === id) {
+      setEditingEquipment(null);
+      setIsEquipmentDialogOpen(false);
+    }
+    loadPortariaEquipment();
+    loadAllPortariaEquipment();
   };
 
   const handleViewShiftDetails = async (shift: Shift) => {
@@ -587,8 +652,10 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
   const paginatedIncidents = filteredIncidents.slice((incidentPage - 1) * ITEMS_PER_PAGE, incidentPage * ITEMS_PER_PAGE);
   const totalIncidentPages = Math.ceil(filteredIncidents.length / ITEMS_PER_PAGE);
 
-  const paginatedEquipment = portariaEquipment.slice((equipmentPage - 1) * ITEMS_PER_PAGE, equipmentPage * ITEMS_PER_PAGE);
-  const totalEquipmentPages = Math.ceil(portariaEquipment.length / ITEMS_PER_PAGE);
+  const totalEquipmentPages = Math.max(1, Math.ceil(portariaEquipment.length / ITEMS_PER_PAGE));
+  const correctedEquipmentPage = Math.min(equipmentPage, totalEquipmentPages);
+  if (correctedEquipmentPage !== equipmentPage) setEquipmentPage(correctedEquipmentPage);
+  const paginatedEquipment = portariaEquipment.slice((correctedEquipmentPage - 1) * ITEMS_PER_PAGE, correctedEquipmentPage * ITEMS_PER_PAGE);
 
   // ========== RELATÓRIO DE PERMANÊNCIAS PROLONGADAS ==========
   // Auditoria de segurança: entregadores acima de 45min e prestadores acima de
@@ -1191,7 +1258,7 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
                   <Wrench className="h-5 w-5" />
                   Equipamentos da Portaria
                 </CardTitle>
-                <Button onClick={() => setIsEquipmentDialogOpen(true)} size="sm">
+                <Button onClick={handleOpenCreateEquipment} size="sm">
                   <Plus className="h-4 w-4 mr-2" />
                   Cadastrar Equipamento
                 </Button>
@@ -1214,6 +1281,14 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
                       </Badge>
                       <Button variant="outline" size="sm" onClick={() => handleToggleEquipment(eq.id, eq.is_active)}>
                         {eq.is_active ? 'Desativar' : 'Ativar'}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => handleOpenEditEquipment(eq)}>
+                        <Pencil className="h-4 w-4" />
+                        Editar
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => handleDeleteEquipment(eq.id)}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                        Excluir
                       </Button>
                     </div>
                   </div>
@@ -1397,11 +1472,11 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
         </div>
       )}
 
-      {/* Dialog: Cadastrar Equipamento */}
-      <Dialog open={isEquipmentDialogOpen} onOpenChange={setIsEquipmentDialogOpen}>
+      {/* Dialog: Cadastrar / Editar Equipamento */}
+      <Dialog open={isEquipmentDialogOpen} onOpenChange={handleEquipmentDialogChange}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Cadastrar Equipamento da Portaria</DialogTitle>
+            <DialogTitle>{editingEquipment ? 'Editar Equipamento da Portaria' : 'Cadastrar Equipamento da Portaria'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div>
@@ -1412,9 +1487,12 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
               <Label>Descrição</Label>
               <Input value={equipmentFormData.description} onChange={e => setEquipmentFormData({ ...equipmentFormData, description: e.target.value })} placeholder="Ex: Marca/Modelo, localização" />
             </div>
-            <Button onClick={handleCreateEquipment} className="w-full">
-              <Plus className="h-4 w-4 mr-2" />
-              Cadastrar
+            <Button onClick={handleSaveEquipment} className="w-full">
+              {editingEquipment ? (
+                <>Salvar Alterações</>
+              ) : (
+                <><Plus className="h-4 w-4 mr-2" />Cadastrar</>
+              )}
             </Button>
           </div>
         </DialogContent>
