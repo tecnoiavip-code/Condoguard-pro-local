@@ -11,7 +11,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Wifi, WifiOff, Camera, Tag, CreditCard, Pencil, Trash2, Plus, Loader2, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Wifi, WifiOff, Camera, Tag, CreditCard, Pencil, Trash2, Plus, Loader2, RefreshCw, CheckCircle2, AlertCircle, Download } from 'lucide-react';
+import { downloadControlIdUtility } from '@/lib/controlid-config-utility';
 import { Device } from '@/types';
 import { useDevices } from '@/hooks/useDevices';
 import { useResidents } from '@/hooks/useResidents';
@@ -215,6 +216,16 @@ export const Devices = () => {
           <p className="text-muted-foreground">Gerencie os dispositivos de controle de acesso</p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => {
+              downloadControlIdUtility(devices.map(d => d.ipAddress).filter(Boolean) as string[]);
+              toast.success('Configurador baixado', { description: 'Abra o arquivo no PC da portaria, na mesma rede dos equipamentos.' });
+            }}
+          >
+            <Download className="h-4 w-4 mr-2" />
+            Configurador Control iD
+          </Button>
           <Button variant="outline" onClick={handleSyncAll} disabled={syncing}>
             {syncing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
             Sincronizar Tudo

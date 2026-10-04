@@ -216,6 +216,84 @@ describe('integração do backend local', () => {
     expect(data.actions).toBeUndefined();
   });
 
+  it('Control iD webhook: decisão central libera morador ativo', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_dec_ativo',
+          name: 'Carlos Decisao',
+          apartment: '701',
+          vehicle_tag: '778899',
+          contract_end_date: '2099-12-31',
+        },
+      }),
+    });
+
+    const byTag = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 1, user_id: 55, user_name: '701 - Carlos Decisao', card_value: '000778899', portal_id: 1, device_id: 'cid-dec-1' }),
+    });
+    expect((await byTag.json()).event).toBe(7);
+
+    const byName = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 1, user_id: 56, user_name: '701 - Carlos Decisao', portal_id: 1, device_id: 'cid-dec-1' }),
+    });
+    const named = await byName.json();
+    expect(named.event).toBe(7);
+    expect(named.actions[0].action).toBe('sec_box');
+  });
+
+  it('Control iD webhook: decisão central nega contrato vencido', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_dec_vencido',
+          name: 'Inquilino Vencido',
+          apartment: '702',
+          contract_end_date: '2020-01-01',
+        },
+      }),
+    });
+
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 1, user_id: 57, user_name: '702 - Inquilino Vencido', portal_id: 1, device_id: 'cid-dec-1' }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.event).toBe(6);
+    expect(data.actions).toBeUndefined();
+  });
+
+  it('Control iD webhook: decisão central nega pessoa bloqueada', async () => {
+    await api('/api/table/blocked_visitors', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_blocked_1',
+          visitor_name: 'Invasor Teste',
+          visitor_document: '99988877766',
+          is_active: true,
+        },
+      }),
+    });
+
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 1, user_id: 58, user_name: 'InvASOR Teste', portal_id: 1, device_id: 'cid-dec-1' }),
+    });
+    const data = await res.json();
+    expect(data.event).toBe(6);
+    expect(data.actions).toBeUndefined();
+  });
+
   it('Control iD webhook: fila push entrega comando e recebe resultado', async () => {
     const queued = await api('/api/functions/controlid-webhook/push-config', {
       method: 'POST',
