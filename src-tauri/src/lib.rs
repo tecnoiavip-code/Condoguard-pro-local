@@ -141,6 +141,12 @@ fn spawn_server(app_handle: &tauri::AppHandle) -> anyhow::Result<(Child, u16, Pa
     cmd.env("PORTALGUARD_WEB_DIR", &web_dir);
   }
 
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000);
+  }
+
   let mut child = cmd.spawn()?;
   let stdout = child.stdout.take().expect("failed to capture stdout");
   let stderr = child.stderr.take().expect("failed to capture stderr");
