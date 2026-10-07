@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = process.env.PGDATA_DIR || path.join(__dirname, '..', 'data');
+export const DATA_DIR = process.env.PORTALGUARD_DATA_DIR || process.env.PGDATA_DIR || path.join(__dirname, '..', 'data');
 export const DB_PATH = path.join(DATA_DIR, 'portalguard.db');
 export const PHOTOS_DIR = path.join(DATA_DIR, 'photos');
 

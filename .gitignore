@@ -11,6 +11,12 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+server-dist
+
+# Tauri (build artifacts)
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
 
 # Dados locais (banco SQLite + fotos)
 data/

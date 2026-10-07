@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   db, now, genId, hashPassword, verifyPassword,
   createUser, getUserByEmail, getUserById, getUserRoles,
-  seedAdmin, parseSeedFile, PHOTOS_DIR,
+  seedAdmin, parseSeedFile, DATA_DIR, PHOTOS_DIR,
 } from './db.js';
 import { registerControlidWebhook, buildWebhookConfig } from './controlid-webhook.js';
 
@@ -14,7 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 parseSeedFile();
 const admin = seedAdmin();
-console.log(`[portalguard-local] Banco: ${process.env.PGDATA_DIR || path.join(__dirname, '..', 'data', 'portalguard.db')}`);
+console.log(`[portalguard-local] Banco: ${path.join(DATA_DIR, 'portalguard.db')}`);
 console.log(`[portalguard-local] Admin: ${admin.email}`);
 
 const app = express();
@@ -803,7 +803,7 @@ app.post('/api/admin/clear', authMiddleware, (req, res) => {
 });
 
 // ---------- Static (build do frontend) ----------
-const distDir = path.join(__dirname, '..', 'dist');
+const distDir = process.env.PORTALGUARD_WEB_DIR || path.join(__dirname, '..', 'dist');
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
   app.get(/^\/(?!api\/|_vite|@vite|src\/|node_modules).*/, (req, res) => {
@@ -811,7 +811,7 @@ if (fs.existsSync(distDir)) {
   });
 }
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORTALGUARD_PORT || process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`[portalguard-local] Servidor rodando em http://127.0.0.1:${PORT}`);
   console.log(`[portalguard-local] Login padrão: ${admin.email} / ${process.env.ADMIN_PASSWORD || 'portaguard@2024'}`);
