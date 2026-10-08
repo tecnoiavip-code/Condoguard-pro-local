@@ -59,23 +59,8 @@ const STAY_STATUS_LABELS: Record<StayStatusFilter, string> = {
   closed: 'Saída registrada',
 };
 
-type ShiftPeriodFilter = '24h' | '7d' | '30d' | 'all';
 type ShiftTypeFilter = 'all' | 'diurno' | 'noturno';
 type ShiftStatusFilter = 'all' | 'active' | 'finished';
-
-const SHIFT_PERIOD_LABELS: Record<ShiftPeriodFilter, string> = {
-  '24h': 'Últimas 24 horas',
-  '7d': 'Últimos 7 dias',
-  '30d': 'Últimos 30 dias',
-  'all': 'Todo o período',
-};
-
-const SHIFT_PERIOD_HOURS: Record<ShiftPeriodFilter, number | null> = {
-  '24h': 24,
-  '7d': 24 * 7,
-  '30d': 24 * 30,
-  'all': null,
-};
 
 const SHIFT_TYPE_LABELS: Record<ShiftTypeFilter, string> = {
   all: 'Todos',
@@ -164,7 +149,8 @@ export const Reports = () => {
   const [currentShift, setCurrentShift] = useState<Shift | null>(null);
   const [shiftSearch, setShiftSearch] = useState('');
   const [shiftPage, setShiftPage] = useState(1);
-  const [shiftPeriodFilter, setShiftPeriodFilter] = useState<ShiftPeriodFilter>('all');
+  const [shiftDateFrom, setShiftDateFrom] = useState('');
+  const [shiftDateTo, setShiftDateTo] = useState('');
   const [shiftTypeFilter, setShiftTypeFilter] = useState<ShiftTypeFilter>('all');
   const [shiftStatusFilter, setShiftStatusFilter] = useState<ShiftStatusFilter>('all');
 
@@ -619,8 +605,11 @@ export const Reports = () => {
   const exportShiftsToPDF = () => {
     const doc = new jsPDF();
     doc.text('Histórico de Plantões', 14, 15);
+    const periodLabel = shiftDateFrom || shiftDateTo
+      ? `${shiftDateFrom ? format(new Date(`${shiftDateFrom}T00:00:00`), 'dd/MM/yyyy') : 'início'} a ${shiftDateTo ? format(new Date(`${shiftDateTo}T00:00:00`), 'dd/MM/yyyy') : 'hoje'}`
+      : 'Todo o período';
     doc.text(
-      `Período: ${SHIFT_PERIOD_LABELS[shiftPeriodFilter]} | Tipo: ${SHIFT_TYPE_LABELS[shiftTypeFilter]} | Situação: ${SHIFT_STATUS_LABELS[shiftStatusFilter]}`,
+      `Período: ${periodLabel} | Tipo: ${SHIFT_TYPE_LABELS[shiftTypeFilter]} | Situação: ${SHIFT_STATUS_LABELS[shiftStatusFilter]}`,
       14,
       22
     );
@@ -670,10 +659,10 @@ export const Reports = () => {
       if (shiftStatusFilter === 'active' && !isActive) return false;
       if (shiftStatusFilter === 'finished' && isActive) return false;
     }
-    const periodHours = SHIFT_PERIOD_HOURS[shiftPeriodFilter];
-    if (periodHours !== null) {
-      const ts = new Date(shift.shift_start).getTime();
-      if (Number.isNaN(ts) || ts < Date.now() - periodHours * 3600000) return false;
+    if (shiftDateFrom || shiftDateTo) {
+      const shiftDay = format(new Date(shift.shift_start), 'yyyy-MM-dd');
+      if (shiftDateFrom && shiftDay < shiftDateFrom) return false;
+      if (shiftDateTo && shiftDay > shiftDateTo) return false;
     }
     return true;
   });
@@ -1086,28 +1075,45 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
                   <Input placeholder="Buscar por equipe, observações ou tipo..." value={shiftSearch} onChange={e => { setShiftSearch(e.target.value); setShiftPage(1); }} className="pl-10" />
                 </div>
                 <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-3">
                     <span className="text-xs text-muted-foreground mr-1">Período:</span>
-                    {(Object.keys(SHIFT_PERIOD_LABELS) as ShiftPeriodFilter[]).map(period => (
-                      <Button
-                        key={period}
-                        size="sm"
-                        variant={shiftPeriodFilter === period ? 'default' : 'outline'}
-                        onClick={() => {
-                          setShiftPeriodFilter(period);
-                          setShiftPage(1);
-                        }}
-                      >
-                        {SHIFT_PERIOD_LABELS[period]}
-                      </Button>
-                    ))}
-                    {(shiftPeriodFilter !== 'all' || shiftTypeFilter !== 'all' || shiftStatusFilter !== 'all' || shiftSearch) && (
+                    <Button
+                      size="sm"
+                      variant={!shiftDateFrom && !shiftDateTo ? 'default' : 'outline'}
+                      onClick={() => {
+                        setShiftDateFrom('');
+                        setShiftDateTo('');
+                        setShiftPage(1);
+                      }}
+                    >
+                      Todo o período
+                    </Button>
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">De:</label>
+                      <Input
+                        type="date"
+                        value={shiftDateFrom}
+                        onChange={(e) => { setShiftDateFrom(e.target.value); setShiftPage(1); }}
+                        className="w-auto"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Até:</label>
+                      <Input
+                        type="date"
+                        value={shiftDateTo}
+                        onChange={(e) => { setShiftDateTo(e.target.value); setShiftPage(1); }}
+                        className="w-auto"
+                      />
+                    </div>
+                    {(shiftDateFrom || shiftDateTo || shiftTypeFilter !== 'all' || shiftStatusFilter !== 'all' || shiftSearch) && (
                       <Button
                         variant="ghost"
                         size="sm"
                         className="ml-auto"
                         onClick={() => {
-                          setShiftPeriodFilter('all');
+                          setShiftDateFrom('');
+                          setShiftDateTo('');
                           setShiftTypeFilter('all');
                           setShiftStatusFilter('all');
                           setShiftSearch('');
