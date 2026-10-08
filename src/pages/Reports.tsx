@@ -59,6 +59,36 @@ const STAY_STATUS_LABELS: Record<StayStatusFilter, string> = {
   closed: 'Saída registrada',
 };
 
+type ShiftPeriodFilter = '24h' | '7d' | '30d' | 'all';
+type ShiftTypeFilter = 'all' | 'diurno' | 'noturno';
+type ShiftStatusFilter = 'all' | 'active' | 'finished';
+
+const SHIFT_PERIOD_LABELS: Record<ShiftPeriodFilter, string> = {
+  '24h': 'Últimas 24 horas',
+  '7d': 'Últimos 7 dias',
+  '30d': 'Últimos 30 dias',
+  'all': 'Todo o período',
+};
+
+const SHIFT_PERIOD_HOURS: Record<ShiftPeriodFilter, number | null> = {
+  '24h': 24,
+  '7d': 24 * 7,
+  '30d': 24 * 30,
+  'all': null,
+};
+
+const SHIFT_TYPE_LABELS: Record<ShiftTypeFilter, string> = {
+  all: 'Todos',
+  diurno: 'Diurno',
+  noturno: 'Noturno',
+};
+
+const SHIFT_STATUS_LABELS: Record<ShiftStatusFilter, string> = {
+  all: 'Todas',
+  active: 'Em andamento',
+  finished: 'Finalizados',
+};
+
 interface Shift {
   id: string;
   team_members: string[];
@@ -134,6 +164,9 @@ export const Reports = () => {
   const [currentShift, setCurrentShift] = useState<Shift | null>(null);
   const [shiftSearch, setShiftSearch] = useState('');
   const [shiftPage, setShiftPage] = useState(1);
+  const [shiftPeriodFilter, setShiftPeriodFilter] = useState<ShiftPeriodFilter>('all');
+  const [shiftTypeFilter, setShiftTypeFilter] = useState<ShiftTypeFilter>('all');
+  const [shiftStatusFilter, setShiftStatusFilter] = useState<ShiftStatusFilter>('all');
 
   // Equipment checklist state
   const [equipmentChecks, setEquipmentChecks] = useState<EquipmentCheck[]>([]);
@@ -586,6 +619,11 @@ export const Reports = () => {
   const exportShiftsToPDF = () => {
     const doc = new jsPDF();
     doc.text('Histórico de Plantões', 14, 15);
+    doc.text(
+      `Período: ${SHIFT_PERIOD_LABELS[shiftPeriodFilter]} | Tipo: ${SHIFT_TYPE_LABELS[shiftTypeFilter]} | Situação: ${SHIFT_STATUS_LABELS[shiftStatusFilter]}`,
+      14,
+      22
+    );
     const tableData = filteredShifts.map(shift => [
       shift.shift_type === 'diurno' ? 'Diurno' : 'Noturno',
       format(new Date(shift.shift_start), "dd/MM/yyyy HH:mm", { locale: ptBR }),
@@ -596,7 +634,7 @@ export const Reports = () => {
     autoTable(doc, {
       head: [['Tipo', 'Início', 'Fim', 'Equipe', 'Observações']],
       body: tableData,
-      startY: 22,
+      startY: 28,
     });
     doc.save('plantoes.pdf');
     toast.success('PDF gerado com sucesso');
@@ -620,11 +658,25 @@ export const Reports = () => {
     if (activeTab === 'equipment') loadAllPortariaEquipment();
   }, [activeTab]);
 
-  const filteredShifts = shifts.filter(shift =>
-    shift.team_members.some(m => m.toLowerCase().includes(shiftSearch.toLowerCase())) ||
-    (shift.notes && shift.notes.toLowerCase().includes(shiftSearch.toLowerCase())) ||
-    (shift.shift_type && shift.shift_type.toLowerCase().includes(shiftSearch.toLowerCase()))
-  );
+  const filteredShifts = shifts.filter(shift => {
+    const matchesSearch =
+      shift.team_members.some(m => m.toLowerCase().includes(shiftSearch.toLowerCase())) ||
+      (shift.notes && shift.notes.toLowerCase().includes(shiftSearch.toLowerCase())) ||
+      (shift.shift_type && shift.shift_type.toLowerCase().includes(shiftSearch.toLowerCase()));
+    if (!matchesSearch) return false;
+    if (shiftTypeFilter !== 'all' && shift.shift_type !== shiftTypeFilter) return false;
+    if (shiftStatusFilter !== 'all') {
+      const isActive = !shift.shift_end;
+      if (shiftStatusFilter === 'active' && !isActive) return false;
+      if (shiftStatusFilter === 'finished' && isActive) return false;
+    }
+    const periodHours = SHIFT_PERIOD_HOURS[shiftPeriodFilter];
+    if (periodHours !== null) {
+      const ts = new Date(shift.shift_start).getTime();
+      if (Number.isNaN(ts) || ts < Date.now() - periodHours * 3600000) return false;
+    }
+    return true;
+  });
   const totalShiftPages = Math.max(1, Math.ceil(filteredShifts.length / ITEMS_PER_PAGE));
   const correctedShiftPage = Math.min(shiftPage, totalShiftPages);
   if (correctedShiftPage !== shiftPage) setShiftPage(correctedShiftPage);
@@ -1028,10 +1080,75 @@ const currentShiftIncidents = incidents.filter(i => currentShift && i.shift_id =
               </div>
             </CardHeader>
             <CardContent>
-              <div className="mb-4">
+              <div className="mb-4 space-y-3">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input placeholder="Buscar por equipe, observações ou tipo..." value={shiftSearch} onChange={e => { setShiftSearch(e.target.value); setShiftPage(1); }} className="pl-10" />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground mr-1">Período:</span>
+                    {(Object.keys(SHIFT_PERIOD_LABELS) as ShiftPeriodFilter[]).map(period => (
+                      <Button
+                        key={period}
+                        size="sm"
+                        variant={shiftPeriodFilter === period ? 'default' : 'outline'}
+                        onClick={() => {
+                          setShiftPeriodFilter(period);
+                          setShiftPage(1);
+                        }}
+                      >
+                        {SHIFT_PERIOD_LABELS[period]}
+                      </Button>
+                    ))}
+                    {(shiftPeriodFilter !== 'all' || shiftTypeFilter !== 'all' || shiftStatusFilter !== 'all' || shiftSearch) && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto"
+                        onClick={() => {
+                          setShiftPeriodFilter('all');
+                          setShiftTypeFilter('all');
+                          setShiftStatusFilter('all');
+                          setShiftSearch('');
+                          setShiftPage(1);
+                        }}
+                      >
+                        <X className="h-4 w-4 mr-1" />
+                        Limpar Filtros
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground mr-1">Tipo:</span>
+                    {(Object.keys(SHIFT_TYPE_LABELS) as ShiftTypeFilter[]).map(type => (
+                      <Button
+                        key={type}
+                        size="sm"
+                        variant={shiftTypeFilter === type ? 'default' : 'outline'}
+                        onClick={() => {
+                          setShiftTypeFilter(type);
+                          setShiftPage(1);
+                        }}
+                      >
+                        {SHIFT_TYPE_LABELS[type]}
+                      </Button>
+                    ))}
+                    <span className="text-xs text-muted-foreground ml-4 mr-1">Situação:</span>
+                    {(Object.keys(SHIFT_STATUS_LABELS) as ShiftStatusFilter[]).map(status => (
+                      <Button
+                        key={status}
+                        size="sm"
+                        variant={shiftStatusFilter === status ? 'default' : 'outline'}
+                        onClick={() => {
+                          setShiftStatusFilter(status);
+                          setShiftPage(1);
+                        }}
+                      >
+                        {SHIFT_STATUS_LABELS[status]}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div className="space-y-4">
