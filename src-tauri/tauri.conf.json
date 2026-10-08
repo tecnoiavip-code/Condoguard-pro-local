@@ -41,6 +41,11 @@
     "resources": {
       "../dist": "dist/"
     },
-    "windows": {}
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
   }
 }
