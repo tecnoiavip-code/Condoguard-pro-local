@@ -42,6 +42,9 @@
       "../dist": "dist/"
     },
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
       "nsis": {
         "installMode": "perMachine",
         "installerHooks": "installer-hooks.nsh"

@@ -53,8 +53,8 @@ DESINSTALACAO
 
 REQUISITOS
 - Windows 10 ou 11 64 bits
-- Microsoft Edge WebView2 Runtime (o instalador instala automaticamente
-  caso nao esteja presente)
+- Nao precisa de internet: o Microsoft Edge WebView2 Runtime ja vem
+  embutido no instalador
 `;
 
 writeFileSync(join(outDir, readmeName), readme, 'utf8');
