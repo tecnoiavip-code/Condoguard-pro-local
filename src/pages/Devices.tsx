@@ -218,8 +218,8 @@ export const Devices = () => {
         <div className="flex gap-2">
           <Button
             variant="outline"
-            onClick={() => {
-              downloadControlIdUtility(devices.map(d => d.ipAddress).filter(Boolean) as string[]);
+            onClick={async () => {
+              await downloadControlIdUtility(devices.map(d => d.ipAddress).filter(Boolean) as string[]);
               toast.success('Configurador baixado', { description: 'Abra o arquivo no PC da portaria, na mesma rede dos equipamentos.' });
             }}
           >

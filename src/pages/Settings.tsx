@@ -92,18 +92,22 @@ export const Settings = () => {
   const { user } = useAuth();
   const userName = user?.user_metadata?.full_name || user?.email || '';
 
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-  let webhookHost = window.location.host || '127.0.0.1:8080';
-  let isLocal = true;
-  if (supabaseUrl) {
-    try {
-      const urlObj = new URL(supabaseUrl);
-      webhookHost = urlObj.host;
-      isLocal = urlObj.hostname === 'localhost' || urlObj.hostname === '127.0.0.1';
-    } catch {
-      isLocal = true;
-    }
-  }
+  const [detectedHost, setDetectedHost] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/network-info', { headers: { Accept: 'application/json' } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(body => {
+        const info = body?.data ?? body;
+        if (!cancelled && info?.host && info.port) setDetectedHost(`${info.host}:${info.port}`);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const webhookHost = detectedHost || window.location.host || '127.0.0.1:8080';
+  const webhookHostname = webhookHost.replace(/:\d+$/, '');
+  const webhookPort = webhookHost.includes(':') ? webhookHost.slice(webhookHost.lastIndexOf(':') + 1) : (window.location.protocol === 'https:' ? '443' : '80');
   const monitorPath = '/api/controlid-webhook';
   const pushAddress = `http://${webhookHost}${monitorPath}`;
   const acceptedPushRoutes = `${monitorPath} e ${monitorPath}/push`;
@@ -1112,11 +1116,11 @@ export const Settings = () => {
                   <div className="p-3 bg-primary/10 rounded-lg space-y-3">
                     <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Hostname:</p>
-                      <code className="text-xs bg-background p-2 rounded block overflow-x-auto">{webhookHost}</code>
+                      <code className="text-xs bg-background p-2 rounded block overflow-x-auto">{webhookHostname}</code>
                     </div>
                     <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Porta:</p>
-                      <code className="text-xs bg-background p-2 rounded block">443</code>
+                      <code className="text-xs bg-background p-2 rounded block">{webhookPort}</code>
                     </div>
                     <div className="space-y-1">
                       <p className="text-xs text-muted-foreground">Monitor path:</p>

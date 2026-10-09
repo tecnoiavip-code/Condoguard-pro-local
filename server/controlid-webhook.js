@@ -97,7 +97,7 @@ export function buildWebhookConfig(req) {
       push_request_timeout: '15000',
       push_request_period: '5',
     },
-    general: { online: '1' },
+    general: { online: '1', local_identification: '1', ihm_enterprise_mode: '0' },
   };
 }
 

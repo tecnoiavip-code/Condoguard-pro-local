@@ -54,7 +54,11 @@ fn get_port() -> u16 {
       }
     }
   }
-  portpicker::pick_unused_port().unwrap_or(8080)
+  const PREFERRED: u16 = 8080;
+  if std::net::TcpListener::bind(("0.0.0.0", PREFERRED)).is_ok() {
+    return PREFERRED;
+  }
+  portpicker::pick_unused_port().unwrap_or(PREFERRED)
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
@@ -800,6 +801,21 @@ app.post('/api/admin/clear', authMiddleware, (req, res) => {
     db.prepare(`DELETE FROM \`${t}\``).run();
   }
   res.json({ data: { ok: true }, error: null });
+});
+
+// ---------- Info de rede (para o configurador Control iD) ----------
+app.get('/api/network-info', (req, res) => {
+  const port = req.socket.localPort || Number(process.env.PORTALGUARD_PORT || process.env.PORT || 8080);
+  const addresses = [];
+  const nets = os.networkInterfaces();
+  for (const list of Object.values(nets)) {
+    for (const info of list || []) {
+      if (info.family === 'IPv4' && !info.internal) addresses.push(info.address);
+    }
+  }
+  const rank = (ip) => ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 2 : 3;
+  addresses.sort((a, b) => rank(a) - rank(b));
+  res.json({ data: { host: addresses[0] || '127.0.0.1', port, addresses }, error: null });
 });
 
 // ---------- Static (build do frontend) ----------
