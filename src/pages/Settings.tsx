@@ -35,6 +35,7 @@ import { useAccessEntries } from '@/hooks/useAccessEntries';
 import { useAuth } from '@/contexts/AuthContext';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import ResidentAccessCard from '@/components/resident/ResidentAccessCard';
 
 // Funções auxiliares para CSV
 const arrayToCSV = (data: any[], headers: string[]) => {
@@ -698,6 +699,7 @@ export const Settings = () => {
 
       {settingsTab === 'geral' && (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <ResidentAccessCard />
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center space-x-2">
