@@ -11,6 +11,16 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { useState, useEffect, useMemo } from 'react';
 import { parseBackupPayload } from '@/lib/backup-import';
+import { restoreCollections } from '@/lib/restore-collections';
+import {
+  csvToCollections,
+  extractPdfLines,
+  parsePdfBackupLines,
+  parseGenericPdfLines,
+  mergeCollections,
+  collectionsCount,
+  type ImportCollection,
+} from '@/lib/import-files';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ExecutiveDashboard } from '@/components/reports/ExecutiveDashboard';
 import { exportExecutiveReport, type EquipmentCheckRow } from '@/lib/executive-pdf-export';
@@ -52,25 +62,6 @@ const downloadCSV = (content: string, filename: string) => {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-};
-
-const parseCSV = (text: string): any[] => {
-  const lines = text.split('\n').filter(line => line.trim());
-  if (lines.length === 0) return [];
-  
-  const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
-  const rows = [];
-  
-  for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(',').map(v => v.replace(/"/g, '').trim());
-    const obj: any = {};
-    headers.forEach((header, index) => {
-      obj[header] = values[index] || '';
-    });
-    rows.push(obj);
-  }
-  
-  return rows;
 };
 
 export const Settings = () => {
@@ -304,254 +295,9 @@ export const Settings = () => {
             rootData = parsed;
           }
 
-          // Mapeamento de tabelas para aliases de exportações antigas/versões anteriores
-          const TABLE_ALIASES: Record<string, string[]> = {
-            residents: ['residents', 'residentes', 'moradores'],
-            vehicles: ['vehicles', 'veiculos'],
-            mails: ['mails', 'correspondencias', 'packages'],
-            access_entries: ['access_entries', 'accessEntries', 'entries', 'registros', 'acessos'],
-            devices: ['devices', 'dispositivos', 'equipamentos'],
-            controlid_config: ['controlid_config', 'controlidConfig', 'controlIdConfig'],
-            visitor_authorizations: ['visitor_authorizations', 'visitorAuthorizations', 'authorizations', 'autorizacoes'],
-            blocked_visitors: ['blocked_visitors', 'blockedVisitors', 'bloqueados'],
-            announcements: ['announcements', 'comunicados', 'avisos'],
-            announcement_attachments: ['announcement_attachments', 'announcementAttachments'],
-            announcement_reads: ['announcement_reads', 'announcementReads'],
-            chat_messages: ['chat_messages', 'chatMessages', 'mensagens'],
-            incidents: ['incidents', 'ocorrencias'],
-            notifications: ['notifications', 'notificacoes'],
-            portaria_equipment: ['portaria_equipment', 'portariaEquipment', 'equipamentosPortaria'],
-            profiles: ['profiles', 'perfis'],
-            push_subscriptions: ['push_subscriptions', 'pushSubscriptions'],
-            shift_equipment_checks: ['shift_equipment_checks', 'shiftEquipmentChecks'],
-            shifts: ['shifts', 'turnos'],
-            user_roles: ['user_roles', 'userRoles', 'roles'],
-            vapid_keys: ['vapid_keys', 'vapidKeys'],
-          };
-
-          // Mapeamento de propriedades em camelCase para snake_case do Postgres
-          const FIELD_ALIASES: Record<string, string> = {
-            vehiclePlate: 'vehicle_plate',
-            vehicleModel: 'vehicle_model',
-            vehicleColor: 'vehicle_color',
-            vehicleTag: 'vehicle_tag',
-            createdAt: 'created_at',
-            updatedAt: 'updated_at',
-            photoUrl: 'photo_url',
-            photo: 'photo_url',
-            residentId: 'resident_id',
-            packageType: 'package_type',
-            trackingCode: 'tracking_code',
-            receivedAt: 'received_at',
-            deliveredAt: 'delivered_at',
-            withdrawnBy: 'withdrawn_by',
-            registeredBy: 'registered_by',
-            visitorName: 'visitor_name',
-            visitorDocument: 'visitor_document',
-            visitorType: 'visitor_type',
-            residentName: 'resident_name',
-            entryTime: 'entry_time',
-            exitTime: 'exit_time',
-            autoRecognized: 'auto_recognized',
-            badgeNumber: 'badge_number',
-            startDate: 'start_date',
-            endDate: 'end_date',
-            ipAddress: 'ip_address',
-            serialNumber: 'serial_number',
-            lastSync: 'last_sync',
-            blockedAt: 'blocked_at',
-            blockedBy: 'blocked_by',
-            authorizedDate: 'authorized_date',
-            authorizedUntil: 'authorized_until',
-            staffNotes: 'staff_notes',
-            reviewedBy: 'reviewed_by',
-            authUserId: 'auth_user_id',
-            authUser_id: 'auth_user_id',
-            isOwner: 'is_owner',
-            deviceName: 'device_name',
-            deviceIp: 'device_ip',
-            devicePort: 'device_port',
-            deviceId: 'device_id',
-            apiPath: 'api_path',
-            isActive: 'is_active',
-          };
-
-          const normalizeRow = (row: Record<string, any>) => {
-            if (!row || typeof row !== 'object') return row;
-            const normalized: Record<string, any> = {};
-            for (const [k, v] of Object.entries(row)) {
-              if (v === undefined) continue;
-              const snakeKey = FIELD_ALIASES[k] || k.replace(/([A-Z])/g, '_$1').toLowerCase();
-              normalized[snakeKey] = v;
-            }
-            return normalized;
-          };
-
-          // Ordem de importação respeitando dependências de chave estrangeira
-          const ORDER = [
-            'profiles',
-            'user_roles',
-            'residents',
-            'vehicles',
-            'devices',
-            'controlid_config',
-            'portaria_equipment',
-            'vapid_keys',
-            'push_subscriptions',
-            'shifts',
-            'shift_equipment_checks',
-            'incidents',
-            'blocked_visitors',
-            'visitor_authorizations',
-            'access_entries',
-            'mails',
-            'announcements',
-            'announcement_attachments',
-            'announcement_reads',
-            'chat_messages',
-            'notifications',
-          ];
-
-          const results: { table: string; ok: number; fail: number; error?: string }[] = [];
-          const CHUNK = 100;
-
-          toast.info('Restaurando backup no banco atual...');
-
-          // Preencher IDs válidos de auth.users do banco destino para evitar violação de FK
-          const validUserIds = new Set<string>();
-          try {
-            const { data: { user: currentUser } } = await supabase.auth.getUser();
-            if (currentUser?.id) validUserIds.add(currentUser.id);
-
-            const { data: profiles } = await supabase.from('profiles').select('id');
-            if (profiles) profiles.forEach((p: any) => validUserIds.add(p.id));
-
-            const { data: roles } = await supabase.from('user_roles').select('user_id');
-            if (roles) roles.forEach((r: any) => validUserIds.add(r.user_id));
-          } catch (err) {
-            console.warn('[restore] Erro ao carregar usuários locais:', err);
-          }
-
-          // Preencher IDs de residentes existentes
-          const existingResidentIds = new Set<string>();
-          try {
-            const { data: dbRes } = await supabase.from('residents').select('id');
-            if (dbRes) dbRes.forEach((r: any) => existingResidentIds.add(r.id));
-          } catch (err) {
-            console.warn('[restore] Erro ao carregar residentes locais:', err);
-          }
-
-          const AUTH_USER_FK_FIELDS = [
-            'created_by', 'registered_by', 'withdrawn_by',
-            'reported_by', 'resolved_by', 'blocked_by',
-            'auth_user_id', 'reviewed_by', 'granted_by'
-          ];
-
-          const sanitizeRow = (table: string, row: Record<string, any>) => {
-            const sanitized = { ...row };
-
-            // 1. Sanitizar FKs que apontam para auth.users(id) se o usuário não existir no banco local/destino
-            for (const field of AUTH_USER_FK_FIELDS) {
-              if (sanitized[field] && typeof sanitized[field] === 'string') {
-                if (!validUserIds.has(sanitized[field])) {
-                  sanitized[field] = null;
-                }
-              }
-            }
-
-            if ((table === 'realtime_events' || table === 'notifications') && sanitized.user_id) {
-              if (!validUserIds.has(sanitized.user_id)) {
-                sanitized.user_id = null;
-              }
-            }
-
-            // 2. Tabela moradores: converter CPF/email vazios ("") para NULL para não violar UNIQUE constraint no Postgres
-            if (table === 'residents') {
-              if (sanitized.cpf !== undefined && (sanitized.cpf === null || String(sanitized.cpf).trim() === '')) {
-                sanitized.cpf = null;
-              }
-              if (sanitized.email !== undefined && (sanitized.email === null || String(sanitized.email).trim() === '')) {
-                sanitized.email = null;
-              }
-            }
-
-            // 3. Tabela de acessos e correspondências: validar se resident_id existe se preenchido
-            if ((table === 'access_entries' || table === 'mails') && sanitized.resident_id) {
-              if (existingResidentIds.size > 0 && !existingResidentIds.has(sanitized.resident_id)) {
-                sanitized.resident_id = null;
-              }
-            }
-
-            return sanitized;
-          };
-
-          for (const table of ORDER) {
-            const possibleKeys = TABLE_ALIASES[table] || [table];
-            let rawRows: any[] = [];
-
-            for (const key of possibleKeys) {
-              if (Array.isArray(rootData[key]) && rootData[key].length > 0) {
-                rawRows = rootData[key];
-                break;
-              }
-            }
-
-            if (rawRows.length === 0) continue;
-
-            let rows = rawRows.map(r => normalizeRow(r));
-
-            // Filtrar tabelas de perfil/roles se apontarem para usuários inexistentes no destino
-            if (table === 'profiles') {
-              rows = rows.filter(r => r.id && validUserIds.has(r.id));
-            } else if (table === 'user_roles') {
-              rows = rows.filter(r => r.user_id && validUserIds.has(r.user_id));
-            }
-
-            if (rows.length === 0) continue;
-
-            // Sanitizar chaves estrangeiras e valores
-            rows = rows.map(r => sanitizeRow(table, r));
-
-            let ok = 0, fail = 0, lastErr = '';
-
-            for (let i = 0; i < rows.length; i += CHUNK) {
-              const chunk = rows.slice(i, i + CHUNK);
-              const { error } = await supabase
-                .from(table as any)
-                .upsert(chunk, { onConflict: 'id' } as any);
-
-              if (error) {
-                // Tentativa linha por linha como fallback em caso de erro no bloco
-                for (const row of chunk) {
-                  const { error: rowErr } = await supabase
-                    .from(table as any)
-                    .upsert(row, { onConflict: 'id' } as any);
-
-                  if (rowErr) {
-                    fail++;
-                    lastErr = rowErr.message;
-                    console.error(`[restore] ${table} erro na linha:`, rowErr.message, row);
-                  } else {
-                    ok++;
-                    if (table === 'residents' && row.id) {
-                      existingResidentIds.add(row.id);
-                    }
-                  }
-                }
-              } else {
-                ok += chunk.length;
-                if (table === 'residents') {
-                  chunk.forEach(r => r.id && existingResidentIds.add(r.id));
-                }
-              }
-            }
-
-            results.push({ table, ok, fail, error: lastErr });
-          }
-
-          const totalOk = results.reduce((s, r) => s + r.ok, 0);
-          const totalFail = results.reduce((s, r) => s + r.fail, 0);
-          const failedTables = results.filter(r => r.fail > 0);
+          const { totalOk, totalFail, failedTables } = await restoreCollections(supabase, rootData, {
+            onStatus: (msg) => toast.info(msg),
+          });
 
           if (totalOk > 0) {
             toast.success(`Restauração concluída! ${totalOk} registros importados.`);
@@ -642,74 +388,58 @@ export const Settings = () => {
     input.type = 'file';
     input.accept = '.csv';
     input.multiple = true;
-    
+
     input.onchange = async (e) => {
-      const files = (e.target as HTMLInputElement).files;
-      if (!files || files.length === 0) return;
+      const files = Array.from((e.target as HTMLInputElement).files || []);
+      if (files.length === 0) return;
 
-      let processedFiles = 0;
-      const totalFiles = files.length;
+      const all: Partial<Record<ImportCollection, Record<string, any>[]>> = {};
+      let recognizedFiles = 0;
+      const unrecognized: string[] = [];
 
-      for (const file of Array.from(files)) {
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-          try {
-            const text = event.target?.result as string;
-            if (!text || text.trim() === '') {
-              toast.error(`Arquivo ${file.name} está vazio`);
-              return;
-            }
-
-            const data = parseCSV(text);
-            if (!data || data.length === 0) {
-              toast.error(`Nenhum dado encontrado em ${file.name}`);
-              return;
-            }
-
-            let successCount = 0;
-            let skippedCount = 0;
-            
-            // Identifica o tipo de arquivo pelo nome
-            if (file.name.includes('morador')) {
-              for (const resident of data) {
-                const success = await supabaseStorage.saveResident(resident);
-                success ? successCount++ : skippedCount++;
-              }
-              let msg = `${successCount} moradores importados!`;
-              if (skippedCount > 0) msg += ` (${skippedCount} duplicados ignorados)`;
-              successCount > 0 ? toast.success(msg) : toast.warning(msg);
-            } else if (file.name.includes('correspondencia')) {
-              for (const mail of data) {
-                const success = await supabaseStorage.saveMail(mail);
-                success ? successCount++ : skippedCount++;
-              }
-              let msg = `${successCount} correspondências importadas!`;
-              if (skippedCount > 0) msg += ` (${skippedCount} duplicados ignorados)`;
-              successCount > 0 ? toast.success(msg) : toast.warning(msg);
-            } else if (file.name.includes('acesso')) {
-              for (const entry of data) {
-                const success = await supabaseStorage.saveEntry(entry);
-                success ? successCount++ : skippedCount++;
-              }
-              let msg = `${successCount} acessos importados!`;
-              if (skippedCount > 0) msg += ` (${skippedCount} duplicados ignorados)`;
-              successCount > 0 ? toast.success(msg) : toast.warning(msg);
-            } else {
-              toast.warning(`Arquivo ${file.name} não reconhecido. Use: moradores-*.csv, correspondencias-*.csv ou acessos-*.csv`);
-            }
-            
-            processedFiles++;
-            if (processedFiles === totalFiles) {
-              setTimeout(() => {
-                toast.info('Importação concluída!');
-              }, 1000);
-            }
-          } catch (error) {
-            console.error('CSV import error:', error);
-            toast.error(`Erro ao importar ${file.name}. Verifique o formato CSV.`);
+      for (const file of files) {
+        try {
+          const text = await file.text();
+          if (!text || text.trim() === '') {
+            toast.error(`Arquivo ${file.name} está vazio`);
+            continue;
           }
-        };
-        reader.readAsText(file);
+
+          const { collections } = csvToCollections(text, file.name);
+          if (collectionsCount(collections) === 0) {
+            unrecognized.push(file.name);
+            continue;
+          }
+          mergeCollections(all, collections);
+          recognizedFiles++;
+        } catch (error) {
+          console.error('CSV import error:', error);
+          toast.error(`Erro ao importar ${file.name}. Verifique o formato CSV.`);
+        }
+      }
+
+      if (recognizedFiles === 0) {
+        toast.warning(
+          'Nenhum CSV reconhecido. Usa cabeçalhos como nome/apartamento (moradores), remetente (correspondências) ou visitante/entrada (acessos).'
+        );
+        return;
+      }
+
+      const { totalOk, totalFail, failedTables } = await restoreCollections(supabase, all, {
+        onStatus: (msg) => toast.info(msg),
+      });
+
+      if (totalOk > 0) {
+        toast.success(`CSV: ${totalOk} registros importados de ${recognizedFiles} arquivo(s).`);
+      }
+      if (failedTables.length > 0) {
+        console.warn('[restore] Tabelas com falhas em alguns registros:', failedTables);
+        toast.warning(`Atenção: ${totalFail} registro(s) apresentaram erros (detalhes no console).`);
+      } else if (totalOk === 0) {
+        toast.warning('Nenhum registro pôde ser importado dos arquivos CSV.');
+      }
+      if (unrecognized.length > 0) {
+        toast.warning(`Não reconhecido(s): ${unrecognized.join(', ')}`);
       }
     };
 
@@ -721,90 +451,60 @@ export const Settings = () => {
     input.type = 'file';
     input.accept = '.pdf';
     input.multiple = true;
-    
+
     input.onchange = async (e) => {
-      const files = (e.target as HTMLInputElement).files;
-      if (!files || files.length === 0) return;
+      const files = Array.from((e.target as HTMLInputElement).files || []);
+      if (files.length === 0) return;
 
       toast.info('Processando arquivos PDF...');
-      
-      const { smartExtractText, parseResidentsFromText, parsedToResident, detectTextType, parseAccessEntriesFromText, parsedToAccessEntry } = await import('@/lib/pdf-import');
 
-      for (const file of Array.from(files)) {
+      const all: Partial<Record<ImportCollection, Record<string, any>[]>> = {};
+      let recognizedFiles = 0;
+
+      for (const file of files) {
         try {
           const arrayBuffer = await file.arrayBuffer();
-          
-          toast.info(`Extraindo texto de ${file.name}...`);
-          const { text, method } = await smartExtractText(arrayBuffer, file.name);
-          
-          if (method === 'ocr') {
-            toast.info(`OCR utilizado para ${file.name} (PDF escaneado detectado)`);
-          }
 
-          if (!text || text.trim().length < 10) {
-            toast.warning(`Não foi possível extrair texto de ${file.name}.`);
+          toast.info(`Extraindo texto de ${file.name}...`);
+          const { lines } = await extractPdfLines(arrayBuffer);
+
+          const backup = parsePdfBackupLines(lines);
+          const merged = collectionsCount(backup.collections) > 0
+            ? backup
+            : parseGenericPdfLines(lines);
+
+          if (collectionsCount(merged.collections) === 0) {
+            toast.warning(`Nenhum dado reconhecido em ${file.name}.`, { duration: 8000 });
             continue;
           }
 
-          // Auto-detect data type
-          const dataType = detectTextType(text);
-          
-          if (dataType === 'access') {
-            // Parse as access entries
-            const parsed = parseAccessEntriesFromText(text);
-            if (parsed.length === 0) {
-              toast.warning(`Nenhum registro de acesso reconhecido em ${file.name}.`, { duration: 8000 });
-              continue;
-            }
-
-            // Try to match apartments to residents
-            let importedCount = 0;
-            let skippedCount = 0;
-            for (const p of parsed) {
-              const entry = parsedToAccessEntry(p);
-              // Match resident by apartment
-              const resident = residents.find(r => r.apartment.toLowerCase() === entry.apartment.toLowerCase());
-              if (resident) {
-                entry.residentId = resident.id;
-                entry.residentName = resident.name;
-              }
-              const success = await supabaseStorage.saveEntry(entry);
-              if (success) importedCount++;
-              else skippedCount++;
-            }
-
-            let msg = `${importedCount} registros de acesso importados de ${file.name}`;
-            if (skippedCount > 0) msg += ` (${skippedCount} com falha)`;
-            importedCount > 0 ? toast.success(msg) : toast.warning(msg);
-          } else {
-            // Parse as residents (default)
-            const parsed = parseResidentsFromText(text);
-            
-            if (parsed.length === 0) {
-              toast.warning(
-                `Nenhum dado reconhecido em ${file.name}. Formatos aceitos: tabelas, "Nome | Apto | Tel", "Nome - Apto 101", campos rotulados (Nome: ..., Apartamento: ...), CSV com ; ou ,.`,
-                { duration: 8000 }
-              );
-              continue;
-            }
-
-            let importedCount = 0;
-            let skippedCount = 0;
-            for (const p of parsed) {
-              const resident = parsedToResident(p);
-              const success = await supabaseStorage.saveResident(resident);
-              if (success) importedCount++;
-              else skippedCount++;
-            }
-            
-            let msg = `${importedCount} moradores importados de ${file.name}`;
-            if (skippedCount > 0) msg += ` (${skippedCount} duplicados ignorados)`;
-            importedCount > 0 ? toast.success(msg) : toast.warning(msg);
-          }
+          mergeCollections(all, merged.collections);
+          recognizedFiles++;
         } catch (error) {
           console.error('PDF import error:', error);
           toast.error(`Erro ao processar ${file.name}. Tente um formato diferente.`);
         }
+      }
+
+      if (recognizedFiles === 0) {
+        toast.warning(
+          'Nenhum dado pôde ser lido dos PDFs. Formatos aceitos: backup do PortalGuard ou listas com nome/apartamento.'
+        );
+        return;
+      }
+
+      const { totalOk, totalFail, failedTables } = await restoreCollections(supabase, all, {
+        onStatus: (msg) => toast.info(msg),
+      });
+
+      if (totalOk > 0) {
+        toast.success(`PDF: ${totalOk} registros importados de ${recognizedFiles} arquivo(s).`);
+      }
+      if (failedTables.length > 0) {
+        console.warn('[restore] Tabelas com falhas em alguns registros:', failedTables);
+        toast.warning(`Atenção: ${totalFail} registro(s) apresentaram erros (detalhes no console).`);
+      } else if (totalOk === 0) {
+        toast.warning('Nenhum registro pôde ser importado dos PDFs.');
       }
     };
 
