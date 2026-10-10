@@ -28,7 +28,7 @@ interface GuestItem {
 
 const statusConfig: Record<string, { label: string; color: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
   pending: { label: 'Pendente', color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30', variant: 'outline' },
-  approved: { label: 'Aprovada', color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30', variant: 'default' },
+  approved: { label: 'Confirmada', color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30', variant: 'default' },
   rejected: { label: 'Rejeitada', color: 'bg-destructive/10 text-destructive border-destructive/30', variant: 'destructive' },
   expired: { label: 'Expirada', color: 'bg-muted text-muted-foreground border-border', variant: 'secondary' },
 };

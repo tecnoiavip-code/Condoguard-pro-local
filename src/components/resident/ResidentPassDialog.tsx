@@ -4,7 +4,7 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { toast } from 'sonner';
 import {
-  Share2, MessageCircle, Copy, Camera, X, ShieldCheck, DoorOpen,
+  Share2, Copy, Camera, X, ShieldCheck, DoorOpen,
   CalendarDays, User, Car, Lock, QrCode,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -44,6 +44,7 @@ const ResidentPassDialog = ({
   const qrRef = useRef<HTMLCanvasElement | null>(null);
   const [savingPass, setSavingPass] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   const passUrl = useMemo(() => {
     if (!authorization?.qr_code_token) return '';
@@ -54,9 +55,9 @@ const ResidentPassDialog = ({
 
   const isActive = authorization.status === 'approved' || authorization.status === 'pending';
 
-  const whatsappMessage = encodeURIComponent(
-    `Olá! Passei um convite virtual para visitar o apartamento ${apartment || (residentName || '')}.\n\nPara acessar o condomínio, apresente o QR Code do seu convite:\n${passUrl}\n\nData autorizada: ${format(new Date(authorization.authorized_date + 'T00:00:00'), 'dd/MM/yyyy', { locale: ptBR })}`
-  );
+  const shareMessage =
+    `${passUrl}\n\nData autorizada: ${format(new Date(authorization.authorized_date + 'T00:00:00'), 'dd/MM/yyyy', { locale: ptBR })}`;
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareMessage)}`;
 
   const copyLink = async () => {
     try {
@@ -85,67 +86,75 @@ const ResidentPassDialog = ({
     onSaved?.();
   };
 
+  const buildPassCanvas = (): HTMLCanvasElement | null => {
+    const qrCanvas = qrRef.current;
+    if (!qrCanvas) return null;
+    const W = 600, H = 820;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    // Fundo
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+
+    // Faixa superior
+    ctx.fillStyle = '#1e40af';
+    ctx.fillRect(0, 0, W, 120);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 34px sans-serif';
+    ctx.fillText('PortalGuard Pro', 40, 52);
+    ctx.font = '18px sans-serif';
+    ctx.fillStyle = '#dbeafe';
+    ctx.fillText('Convite de Acesso Digital', 40, 82);
+
+    // QR Code (desenhado a partir do canvas renderizado no DOM)
+    const qrSize = 280;
+    const qrX = (W - qrSize) / 2;
+    const qrY = 160;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(qrX - 16, qrY - 16, qrSize + 32, qrSize + 32);
+    ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
+
+    // Campos
+    const drawRow = (label: string, value: string, y: number) => {
+      ctx.fillStyle = '#64748b';
+      ctx.font = '16px sans-serif';
+      ctx.fillText(label, 40, y);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.fillText(value.length > 30 ? value.slice(0, 30) + '...' : value, 40, y + 34);
+    };
+
+    drawRow('APARTAMENTO', apartment || '—', 520);
+    drawRow('CONVIDADO', authorization.visitor_name, 600);
+    drawRow(
+      'DATA AUTORIZADA',
+      format(new Date(authorization.authorized_date + 'T00:00:00'), 'dd/MM/yyyy', { locale: ptBR }),
+      680
+    );
+    if (authorization.vehicle_plate) {
+      drawRow('VEÍCULO', authorization.vehicle_plate, 756);
+    }
+
+    // Rodapé
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '13px sans-serif';
+    ctx.fillText('Apresente este QR Code na portaria do condomínio.', 40, H - 30);
+
+    return canvas;
+  };
+
   const saveImage = () => {
-    if (!qrRef.current) return;
     setSavingPass(true);
     try {
-      const W = 600, H = 820;
-      const canvas = document.createElement('canvas');
-      canvas.width = W;
-      canvas.height = H;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      // Fundo
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, W, H);
-
-      // Faixa superior
-      ctx.fillStyle = '#1e40af';
-      ctx.fillRect(0, 0, W, 120);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 34px sans-serif';
-      ctx.fillText('PortalGuard Pro', 40, 52);
-      ctx.font = '18px sans-serif';
-      ctx.fillStyle = '#dbeafe';
-      ctx.fillText('Convite de Acesso Digital', 40, 82);
-
-      // QR Code (desenhado a partir do canvas renderizado no DOM)
-      const qrCanvas = qrRef.current;
-      const qrSize = 280;
-      const qrX = (W - qrSize) / 2;
-      const qrY = 160;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(qrX - 16, qrY - 16, qrSize + 32, qrSize + 32);
-      ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
-
-      // Campos
-      const drawRow = (label: string, value: string, y: number) => {
-        ctx.fillStyle = '#64748b';
-        ctx.font = '16px sans-serif';
-        ctx.fillText(label, 40, y);
-        ctx.fillStyle = '#0f172a';
-        ctx.font = 'bold 26px sans-serif';
-        ctx.fillText(value.length > 30 ? value.slice(0, 30) + '...' : value, 40, y + 34);
-      };
-
-      drawRow('APARTAMENTO', apartment || '—', 520);
-      drawRow('CONVIDADO', authorization.visitor_name, 600);
-      drawRow(
-        'DATA AUTORIZADA',
-        format(new Date(authorization.authorized_date + 'T00:00:00'), 'dd/MM/yyyy', { locale: ptBR }),
-        680
-      );
-      if (authorization.vehicle_plate) {
-        drawRow('VEÍCULO', authorization.vehicle_plate, 756);
+      const canvas = buildPassCanvas();
+      if (!canvas) {
+        toast.error('Erro ao gerar a imagem');
+        return;
       }
-
-      // Rodapé
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '13px sans-serif';
-      ctx.fillText('Apresente este QR Code na portaria do condomínio.', 40, H - 30);
-
-      // Download
       const a = document.createElement('a');
       a.href = canvas.toDataURL('image/png');
       a.download = `convite-${authorization.visitor_name.replace(/\s+/g, '-').toLowerCase()}.png`;
@@ -157,6 +166,38 @@ const ResidentPassDialog = ({
     } finally {
       setSavingPass(false);
     }
+  };
+
+  const shareInvite = async () => {
+    if (!passUrl) return;
+    setSharing(true);
+    const fileName = `convite-${authorization.visitor_name.replace(/\s+/g, '-').toLowerCase()}.png`;
+    try {
+      const canvas = buildPassCanvas();
+      const blob: Blob | null = await new Promise((resolve) => {
+        if (!canvas) {
+          resolve(null);
+          return;
+        }
+        canvas.toBlob(resolve, 'image/png');
+      });
+      const file = blob ? new File([blob], fileName, { type: 'image/png' }) : null;
+      const nav = navigator as any;
+      const canShareFile = !!file && typeof nav.canShare === 'function' && nav.canShare({ files: [file] });
+      if (typeof nav.share === 'function' && (!file || canShareFile)) {
+        await nav.share(canShareFile ? { files: [file], text: shareMessage } : { text: shareMessage });
+        setSharing(false);
+        return;
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        setSharing(false);
+        return;
+      }
+      console.error('Erro ao compartilhear:', err);
+    }
+    setSharing(false);
+    window.open(whatsappUrl, '_blank');
   };
 
   return (
@@ -267,12 +308,8 @@ const ResidentPassDialog = ({
 
         {/* Compartilhar */}
         <div className="grid grid-cols-3 gap-2">
-          <Button
-            variant="outline"
-            onClick={() => { if (passUrl) window.open(`https://wa.me/?text=${whatsappMessage}`, '_blank'); }}
-            disabled={!passUrl}
-          >
-            <MessageCircle className="mr-2 h-4 w-4" /> WhatsApp
+          <Button variant="outline" onClick={shareInvite} disabled={!passUrl || sharing} title="Compartilhar cartão com QR Code">
+            <Share2 className="mr-2 h-4 w-4" /> {sharing ? 'Compartilhando...' : 'Compartilhar'}
           </Button>
           <Button variant="outline" onClick={copyLink} disabled={!passUrl}>
             <Copy className="mr-2 h-4 w-4" /> Copiar Link

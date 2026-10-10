@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Shield, Check, X, Clock, Users, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, User, Car, FileText, Calendar } from 'lucide-react';
+import { Shield, Check, Clock, Users, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, User, Car, FileText, Calendar } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -91,11 +91,11 @@ const StaffAuthorizations = () => {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  const handleReview = async (id: string, status: 'approved' | 'rejected') => {
+  const handleConfirm = async (id: string) => {
     const auth = auths.find(a => a.id === id);
     await supabase
       .from('visitor_authorizations')
-      .update({ status, staff_notes: staffNotes || null, reviewed_by: user?.id } as any)
+      .update({ status: 'approved', staff_notes: staffNotes || null, reviewed_by: user?.id } as any)
       .eq('id', id);
 
     if (auth) {
@@ -103,7 +103,7 @@ const StaffAuthorizations = () => {
         .eq('id', auth.resident_id)
         .maybeSingle();
       if (res?.auth_user_id) {
-        const title = status === 'approved' ? '✅ Autorização aprovada' : '❌ Autorização rejeitada';
+        const title = '✅ Autorização confirmada';
         const body = `Visitante: ${auth.visitor_name}${staffNotes ? ` — ${staffNotes}` : ''}`;
         await supabase.from('notifications').insert({
           user_id: res.auth_user_id,
@@ -116,20 +116,20 @@ const StaffAuthorizations = () => {
       }
     }
 
-    toast.success(status === 'approved' ? 'Autorização aprovada!' : 'Autorização rejeitada');
+    toast.success('Autorização confirmada!');
     setReviewId(null);
     setStaffNotes('');
     loadAuths();
   };
 
-  const handleBulkReview = async (items: (Authorization & { resident?: ResidentInfo })[], status: 'approved' | 'rejected') => {
+  const handleBulkConfirm = async (items: (Authorization & { resident?: ResidentInfo })[]) => {
     const pendingItems = items.filter(a => a.status === 'pending');
     if (pendingItems.length === 0) return;
 
     for (const item of pendingItems) {
       await supabase
         .from('visitor_authorizations')
-        .update({ status, staff_notes: staffNotes || null, reviewed_by: user?.id } as any)
+        .update({ status: 'approved', staff_notes: staffNotes || null, reviewed_by: user?.id } as any)
         .eq('id', item.id);
     }
 
@@ -139,7 +139,7 @@ const StaffAuthorizations = () => {
       .eq('id', first.resident_id)
       .maybeSingle();
     if (res?.auth_user_id) {
-      const title = status === 'approved' ? '✅ Lista de convidados aprovada' : '❌ Lista de convidados rejeitada';
+      const title = '✅ Lista de convidados confirmada';
       const body = `${pendingItems.length} convidado(s)${staffNotes ? ` — ${staffNotes}` : ''}`;
       await supabase.from('notifications').insert({
         user_id: res.auth_user_id,
@@ -150,7 +150,7 @@ const StaffAuthorizations = () => {
       sendPushToUser(res.auth_user_id, title, body, 'authorization');
     }
 
-    toast.success(status === 'approved' ? 'Lista aprovada!' : 'Lista rejeitada');
+    toast.success('Lista confirmada!');
     setStaffNotes('');
     loadAuths();
   };
@@ -201,7 +201,7 @@ const StaffAuthorizations = () => {
   // Sort singles by created_at desc
   singles.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-  const statusLabels: Record<string, string> = { pending: 'Pendente', approved: 'Aprovada', rejected: 'Rejeitada', expired: 'Expirada' };
+  const statusLabels: Record<string, string> = { pending: 'Pendente', approved: 'Confirmada', rejected: 'Rejeitada', expired: 'Expirada' };
   const statusVariant = (s: string | null): 'default' | 'secondary' | 'destructive' | 'outline' => {
     if (s === 'approved') return 'default';
     if (s === 'rejected') return 'destructive';
@@ -269,7 +269,7 @@ const StaffAuthorizations = () => {
                       <div className="flex items-center gap-2">
                         <Badge variant={statusVariant(a.status)}>{statusLabels[a.status || 'pending']}</Badge>
                         {a.status === 'pending' && (
-                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setReviewId(a.id); }}>Revisar</Button>
+                          <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setReviewId(a.id); }}>Confirmar</Button>
                         )}
                       </div>
                     </div>
@@ -283,15 +283,12 @@ const StaffAuthorizations = () => {
                 return (
                   <Dialog open={!!reviewId && !!singles.find(s => s.id === reviewId)} onOpenChange={(o) => { if (!o) setReviewId(null); }}>
                     <DialogContent>
-                      <DialogHeader><DialogTitle>Revisar Autorização</DialogTitle></DialogHeader>
+                      <DialogHeader><DialogTitle>Confirmar Autorização</DialogTitle></DialogHeader>
                       <div className="space-y-4">
                         <p><strong>Visitante:</strong> {a.visitor_name}</p>
                         <p><strong>Morador:</strong> {a.resident?.name} - Apto {a.resident?.apartment}</p>
                         <Textarea placeholder="Observações (opcional)" value={staffNotes} onChange={(e) => setStaffNotes(e.target.value)} />
-                        <div className="flex gap-2">
-                          <Button className="flex-1" onClick={() => handleReview(a.id, 'approved')}><Check className="h-4 w-4 mr-1" /> Aprovar</Button>
-                          <Button variant="destructive" className="flex-1" onClick={() => handleReview(a.id, 'rejected')}><X className="h-4 w-4 mr-1" /> Rejeitar</Button>
-                        </div>
+                        <Button className="w-full" onClick={() => handleConfirm(a.id)}><Check className="h-4 w-4 mr-1" /> Confirmar Autorização</Button>
                       </div>
                     </DialogContent>
                   </Dialog>
@@ -337,14 +334,9 @@ const StaffAuthorizations = () => {
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             {pendingCount > 0 && (
-                              <div className="flex gap-1">
-                                <Button size="sm" variant="default" onClick={(e) => { e.stopPropagation(); handleBulkReview(list.items, 'approved'); }}>
-                                  <Check className="h-4 w-4 mr-1" /> Aprovar
-                                </Button>
-                                <Button size="sm" variant="destructive" onClick={(e) => { e.stopPropagation(); handleBulkReview(list.items, 'rejected'); }}>
-                                  <X className="h-4 w-4" />
-                                </Button>
-                              </div>
+                              <Button size="sm" variant="default" onClick={(e) => { e.stopPropagation(); handleBulkConfirm(list.items); }}>
+                                <Check className="h-4 w-4 mr-1" /> Confirmar Lista
+                              </Button>
                             )}
                             {isExpanded ? <ChevronUp className="h-5 w-5 text-muted-foreground" /> : <ChevronDown className="h-5 w-5 text-muted-foreground" />}
                           </div>
@@ -365,7 +357,7 @@ const StaffAuthorizations = () => {
                               <div className="flex items-center gap-2">
                                 <Badge variant={statusVariant(a.status)} className="text-xs">{statusLabels[a.status || 'pending']}</Badge>
                                 {a.status === 'pending' && (
-                                  <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setReviewId(a.id); }}>Revisar</Button>
+                                  <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setReviewId(a.id); }}>Confirmar</Button>
                                 )}
                               </div>
                             </div>
@@ -388,15 +380,12 @@ const StaffAuthorizations = () => {
         return (
           <Dialog open={true} onOpenChange={(o) => { if (!o) setReviewId(null); }}>
             <DialogContent>
-              <DialogHeader><DialogTitle>Revisar Autorização</DialogTitle></DialogHeader>
+              <DialogHeader><DialogTitle>Confirmar Autorização</DialogTitle></DialogHeader>
               <div className="space-y-4">
                 <p><strong>Visitante:</strong> {a.visitor_name}</p>
                 <p><strong>Morador:</strong> {a.resident?.name} - Apto {a.resident?.apartment}</p>
                 <Textarea placeholder="Observações (opcional)" value={staffNotes} onChange={(e) => setStaffNotes(e.target.value)} />
-                <div className="flex gap-2">
-                  <Button className="flex-1" onClick={() => handleReview(a.id, 'approved')}><Check className="h-4 w-4 mr-1" /> Aprovar</Button>
-                  <Button variant="destructive" className="flex-1" onClick={() => handleReview(a.id, 'rejected')}><X className="h-4 w-4 mr-1" /> Rejeitar</Button>
-                </div>
+                <Button className="w-full" onClick={() => handleConfirm(a.id)}><Check className="h-4 w-4 mr-1" /> Confirmar Autorização</Button>
               </div>
             </DialogContent>
           </Dialog>
