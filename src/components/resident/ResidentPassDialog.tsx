@@ -1,10 +1,10 @@
-import { useMemo, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { toast } from 'sonner';
 import {
-  Share2, Copy, Camera, X, ShieldCheck, DoorOpen,
+  Share2, Camera, X, ShieldCheck, DoorOpen,
   CalendarDays, User, Car, Lock, QrCode,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -46,27 +46,14 @@ const ResidentPassDialog = ({
   const [toggling, setToggling] = useState(false);
   const [sharing, setSharing] = useState(false);
 
-  const passUrl = useMemo(() => {
-    if (!authorization?.qr_code_token) return '';
-    return `${window.location.origin}/convite/${authorization.qr_code_token}`;
-  }, [authorization?.qr_code_token]);
-
   if (!authorization) return null;
+
+  const qrValue = authorization?.qr_code_token || '';
 
   const isActive = authorization.status === 'approved' || authorization.status === 'pending';
 
   const shareMessage =
-    `${passUrl}\n\nData autorizada: ${format(new Date(authorization.authorized_date + 'T00:00:00'), 'dd/MM/yyyy', { locale: ptBR })}`;
-  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareMessage)}`;
-
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(passUrl);
-      toast.success('Link do convite copiado!');
-    } catch {
-      toast.error('Não foi possível copiar o link');
-    }
-  };
+    `Data autorizada: ${format(new Date(authorization.authorized_date + 'T00:00:00'), 'dd/MM/yyyy', { locale: ptBR })}`;
 
   const handleToggleMode = async () => {
     if (!authorization?.qr_code_token) return;
@@ -169,7 +156,7 @@ const ResidentPassDialog = ({
   };
 
   const shareInvite = async () => {
-    if (!passUrl) return;
+    if (!qrValue) return;
     setSharing(true);
     const fileName = `convite-${authorization.visitor_name.replace(/\s+/g, '-').toLowerCase()}.png`;
     try {
@@ -194,10 +181,10 @@ const ResidentPassDialog = ({
         setSharing(false);
         return;
       }
-      console.error('Erro ao compartilhear:', err);
+      console.error('Erro ao compartilhar:', err);
     }
     setSharing(false);
-    window.open(whatsappUrl, '_blank');
+    saveImage();
   };
 
   return (
@@ -230,7 +217,7 @@ const ResidentPassDialog = ({
               <div className="bg-white rounded-2xl p-4">
                 <QRCodeCanvas
                   ref={qrRef}
-                  value={passUrl || 'INVALIDO'}
+                  value={qrValue || 'INVALIDO'}
                   size={220}
                   includeMargin={false}
                   level="H"
@@ -307,22 +294,13 @@ const ResidentPassDialog = ({
         </p>
 
         {/* Compartilhar */}
-        <div className="grid grid-cols-3 gap-2">
-          <Button variant="outline" onClick={shareInvite} disabled={!passUrl || sharing} title="Compartilhar cartão com QR Code">
+        <div className="grid grid-cols-2 gap-2">
+          <Button variant="outline" onClick={shareInvite} disabled={!qrValue || sharing} title="Compartilhar cartão com QR Code">
             <Share2 className="mr-2 h-4 w-4" /> {sharing ? 'Compartilhando...' : 'Compartilhar'}
           </Button>
-          <Button variant="outline" onClick={copyLink} disabled={!passUrl}>
-            <Copy className="mr-2 h-4 w-4" /> Copiar Link
-          </Button>
-          <Button variant="outline" onClick={saveImage} disabled={!passUrl} title="Salvar cartão do convite (PNG)">
+          <Button variant="outline" onClick={saveImage} disabled={!qrValue} title="Salvar cartão do convite (PNG)">
             <Camera className="mr-2 h-4 w-4" /> {savingPass ? 'Gerando...' : 'Salvar Imagem'}
           </Button>
-        </div>
-
-        <div className="sticky bottom-0 bg-background pt-2">
-          <p className="text-[10px] text-muted-foreground text-center break-all flex items-center justify-center gap-1">
-            <Share2 className="h-3 w-3 shrink-0" /> {passUrl || 'Convite sem QR Code'}
-          </p>
         </div>
       </DialogContent>
     </Dialog>

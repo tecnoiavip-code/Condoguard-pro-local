@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import jsQR from 'jsqr';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog';
@@ -64,10 +65,7 @@ const GuestPassScanner = ({ open, onOpenChange, onEntryConfirmed }: GuestPassSca
   const streamRef = useRef<MediaStream | null>(null);
   const scanTimerRef = useRef<number | null>(null);
 
-  const supported = useMemo(
-    () => typeof window !== 'undefined' && 'BarcodeDetector' in window,
-    []
-  );
+  const scanCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const reset = () => {
     setInput('');
@@ -92,19 +90,6 @@ const GuestPassScanner = ({ open, onOpenChange, onEntryConfirmed }: GuestPassSca
     }
     setCameraActive(false);
   };
-
-  useEffect(() => {
-    if (!open) {
-      reset();
-      stopCamera();
-      return;
-    }
-    setMode('usb');
-    const t = setTimeout(() => inputRef.current?.focus(), 250);
-    return () => { clearTimeout(t); stopCamera(); };
-  }, [open]);
-
-  useEffect(() => () => stopCamera(), []);
 
   const handleValidate = async (token: string) => {
     setValidating(true);
@@ -151,36 +136,52 @@ const GuestPassScanner = ({ open, onOpenChange, onEntryConfirmed }: GuestPassSca
         await videoRef.current.play();
       }
       setCameraActive(true);
-      if (!supported) {
-        setCameraError('Este navegador não suporta leitura por câmera. Use o campo manual.');
-        return;
-      }
       scanTimerRef.current = window.setInterval(scanFrame, 180);
     } catch {
       setCameraError('Não foi possível acessar a câmera.');
     }
   };
 
-  const scanFrame = async () => {
-    if (!videoRef.current || !supported) return;
+  const scanFrame = () => {
+    const video = videoRef.current;
+    const canvas = scanCanvasRef.current;
+    if (!video || !canvas || video.readyState < 2 || !video.videoWidth) return;
+    if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+    if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     try {
-      // eslint-disable-next-line no-undef
-      const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-      const codes = await detector.detect(videoRef.current);
-      if (!codes || codes.length === 0) return;
-      for (const code of codes) {
-        const tk = parseToken(code.rawValue || '');
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+      if (code) {
+        const tk = parseToken(code.data);
         if (tk) {
           stopCamera();
           handleValidate(tk);
-          return;
         }
       }
     } catch {
-      stopCamera();
-      setCameraError('Falha na leitura. Use o campo manual.');
+      // ignora frames sem imagem legível
     }
   };
+
+  useEffect(() => {
+    if (!open) {
+      reset();
+      stopCamera();
+      return;
+    }
+    const hasCamera = typeof navigator !== 'undefined' && 'mediaDevices' in navigator && !!navigator.mediaDevices.getUserMedia;
+    setMode(hasCamera ? 'camera' : 'usb');
+    const t = setTimeout(() => {
+      if (hasCamera) startCamera();
+      else inputRef.current?.focus();
+    }, 300);
+    return () => { clearTimeout(t); stopCamera(); };
+  }, [open]);
+
+  useEffect(() => () => stopCamera(), []);
 
   const capturePhoto = () => {
     const video = videoRef.current;
@@ -224,14 +225,14 @@ const GuestPassScanner = ({ open, onOpenChange, onEntryConfirmed }: GuestPassSca
         <DialogHeader className="flex items-center justify-between">
           <DialogTitle className="flex items-center gap-2">
             <QrCode className="h-5 w-5" />
-            Bipar / Ler Convite QR Code
+            Ler Convite (QR Code)
           </DialogTitle>
           <Button variant="ghost" size="icon" onClick={() => onOpenChange(false)}>
             <X className="h-4 w-4" />
           </Button>
         </DialogHeader>
         <DialogDescription className="sr-only">
-          Leia o QR Code de um convite digital e confirme a entrada em um clique.
+          Aponte a câmera ou o leitor USB para o QR Code e confirme a entrada.
         </DialogDescription>
 
         {/* Estado de erro */}
@@ -252,7 +253,7 @@ const GuestPassScanner = ({ open, onOpenChange, onEntryConfirmed }: GuestPassSca
           <div className="space-y-4">
             {/* Alternador de modo */}
             <div className="grid grid-cols-2 gap-2">
-              <Button variant={mode === 'usb' ? 'default' : 'outline'} size="sm" onClick={() => { setMode('usb'); setCameraError(null); }}>
+              <Button variant={mode === 'usb' ? 'default' : 'outline'} size="sm" onClick={() => { setMode('usb'); setCameraError(null); stopCamera(); }}>
                 <Keyboard className="mr-2 h-4 w-4" /> Leitor USB
               </Button>
               <Button
@@ -273,7 +274,7 @@ const GuestPassScanner = ({ open, onOpenChange, onEntryConfirmed }: GuestPassSca
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') submitInput(); }}
-                  placeholder="Aponte o leitor para o QR Code ou cole o link do convite"
+                  placeholder="Aponte o leitor para o QR Code"
                   className="rounded-xl font-mono text-sm"
                   disabled={validating}
                 />
@@ -283,25 +284,34 @@ const GuestPassScanner = ({ open, onOpenChange, onEntryConfirmed }: GuestPassSca
               </div>
             ) : (
               <div className="space-y-2 relative">
-                <div className="relative rounded-xl overflow-hidden bg-black">
+                <canvas ref={scanCanvasRef} className="hidden" />
+                <div className="relative rounded-2xl overflow-hidden bg-black">
                   {!cameraActive && !cameraError && (
-                    <div className="h-56 flex items-center justify-center text-slate-400 text-sm">
+                    <div className="aspect-[4/3] flex items-center justify-center text-slate-400 text-sm">
                       <Loader2 className="h-6 w-6 animate-spin mr-2" /> Iniciando câmera...
                     </div>
                   )}
-                  <video ref={videoRef} className="w-full h-56 object-cover" muted playsInline />
+                  <video ref={videoRef} className="w-full aspect-[4/3] object-cover" muted playsInline />
                   {cameraActive && (
-                    <div className="absolute inset-0 border-4 border-dashed border-white/20 m-6 rounded-xl" />
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                      <div className="relative h-40 w-40">
+                        <div className="absolute left-0 top-0 h-8 w-8 border-l-4 border-t-4 border-emerald-400 rounded-tl-xl" />
+                        <div className="absolute right-0 top-0 h-8 w-8 border-r-4 border-t-4 border-emerald-400 rounded-tr-xl" />
+                        <div className="absolute left-0 bottom-0 h-8 w-8 border-l-4 border-b-4 border-emerald-400 rounded-bl-xl" />
+                        <div className="absolute right-0 bottom-0 h-8 w-8 border-r-4 border-b-4 border-emerald-400 rounded-br-xl" />
+                      </div>
+                    </div>
                   )}
                 </div>
-                {cameraError && (
+                {cameraError ? (
                   <p className="text-xs text-destructive flex items-center gap-1">
-                    <CameraOff className="h-3 w-3" /> {cameraError}
+                    <CameraOff className="h-3 w-3" /> {cameraError} Use o leitor USB ou digite o código manualmente.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground text-center">
+                    Alinhe o QR Code dentro do quadro. A leitura é automática.
                   </p>
                 )}
-                <p className="text-xs text-muted-foreground">
-                  Aproxime o QR Code da câmera. Uma máscara verde confirmará a leitura.
-                </p>
               </div>
             )}
           </div>
