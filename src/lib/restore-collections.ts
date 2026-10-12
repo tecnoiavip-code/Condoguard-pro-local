@@ -46,6 +46,7 @@ export const FIELD_ALIASES: Record<string, string> = {
   vehicleModel: 'vehicle_model',
   vehicleColor: 'vehicle_color',
   vehicleTag: 'vehicle_tag',
+  personType: 'person_type',
   createdAt: 'created_at',
   updatedAt: 'updated_at',
   photoUrl: 'photo_url',

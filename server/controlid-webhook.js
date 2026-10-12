@@ -226,7 +226,7 @@ const evaluateCentralAccess = async (db, payload) => {
     if (cardValue && cardValue !== '0') {
       const cleanCardValue = sanitizeString(rawCardValue, 100);
       resident = db.prepare(
-        'SELECT id, name, apartment, contract_type, contract_end_date, vehicle_tag FROM residents WHERE vehicle_tag = ? OR vehicle_tag = ? LIMIT 1'
+        'SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents WHERE vehicle_tag = ? OR vehicle_tag = ? LIMIT 1'
       ).get(cardValue, cleanCardValue) || null;
     }
 
@@ -235,7 +235,7 @@ const evaluateCentralAccess = async (db, payload) => {
       if (m) {
         const [, apt, n] = m;
         const rows = db.prepare(
-          'SELECT id, name, apartment, contract_type, contract_end_date FROM residents WHERE apartment LIKE ?'
+          'SELECT id, name, apartment, contract_type, contract_end_date, person_type FROM residents WHERE apartment LIKE ?'
         ).all(`%${apt.trim()}%`);
         const target = normalizeName(n);
         resident = rows.find((r) => {
@@ -251,6 +251,9 @@ const evaluateCentralAccess = async (db, payload) => {
         if (resident.contract_end_date < today) {
           return { allow: false, reason: 'Contrato vencido', source: 'db', resident: resident.name };
         }
+      }
+      if (resident.person_type && resident.person_type !== 'morador') {
+        return { allow: true, reason: 'Acesso autorizado - colaborador ativo', source: 'db', resident: resident.name };
       }
       return { allow: true, reason: 'Morador ativo', source: 'db', resident: resident.name };
     }

@@ -32,6 +32,7 @@ const normalizeResident = (item: any, index: number): Resident => ({
   vehicleModel: toStringValue(item?.vehicle_model || item?.vehicleModel || ''),
   vehicleColor: toStringValue(item?.vehicle_color || item?.vehicleColor || ''),
   vehicleTag: toStringValue(item?.vehicle_tag || item?.vehicleTag || ''),
+  personType: toStringValue(item?.person_type || item?.personType) === 'empregado' || toStringValue(item?.person_type || item?.personType) === 'prestador' ? toStringValue(item?.person_type || item?.personType) as Resident['personType'] : 'morador',
   createdAt: toStringValue(item?.created_at || item?.createdAt || new Date().toISOString()),
 });
 

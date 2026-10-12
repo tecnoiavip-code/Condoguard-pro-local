@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS residents (
   created_by TEXT,
   email TEXT,
   name TEXT NOT NULL,
+  person_type TEXT,
   phone TEXT,
   photo_url TEXT,
   updated_at TEXT,
@@ -336,6 +337,7 @@ db.exec(SCHEMA);
 const residentCols = new Set(db.prepare('PRAGMA table_info(residents)').all().map(c => c.name));
 if (!residentCols.has('contract_type')) db.exec('ALTER TABLE residents ADD COLUMN contract_type TEXT');
 if (!residentCols.has('contract_end_date')) db.exec('ALTER TABLE residents ADD COLUMN contract_end_date TEXT');
+if (!residentCols.has('person_type')) db.exec('ALTER TABLE residents ADD COLUMN person_type TEXT');
 
 // Migração assistida: novas colunas de ocorrências (Livro de Ocorrências).
 const incidentCols = new Set(db.prepare('PRAGMA table_info(incidents)').all().map(c => c.name));

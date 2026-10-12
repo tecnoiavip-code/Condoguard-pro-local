@@ -12,6 +12,7 @@ export interface Resident {
   vehicleTag?: string;
   contractType?: string;
   contractEndDate?: string;
+  personType?: 'morador' | 'empregado' | 'prestador';
   createdAt: string;
 }
 

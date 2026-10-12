@@ -168,6 +168,7 @@ const HEADER_MAPS: Record<ImportCollection, Record<string, string>> = {
     vehiclecolor: 'vehicle_color', cor: 'vehicle_color',
     vehicletag: 'vehicle_tag', tag: 'vehicle_tag',
     contracttype: 'contract_type', contractenddate: 'contract_end_date', vencimento: 'contract_end_date',
+    persontype: 'person_type', tipo: 'person_type', tipodepessoa: 'person_type', categoria: 'person_type',
   },
   mails: {
     id: 'id',

@@ -31,6 +31,7 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 
 type ContractFilter = 'all' | 'tenants' | 'expiring' | 'expired';
+type PersonFilter = 'all' | 'residents' | 'staff';
 
 export const Residents = () => {
   const { residents, loading, saveResident, deleteResident, refresh } = useResidents();
@@ -43,6 +44,7 @@ export const Residents = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
   const [contractFilter, setContractFilter] = useState<ContractFilter>('all');
+  const [personFilter, setPersonFilter] = useState<PersonFilter>('all');
   const itemsPerPage = 10;
   const [formData, setFormData] = useState({
     name: '',
@@ -57,6 +59,7 @@ export const Residents = () => {
     vehicleTag: '',
     contractType: '',
     contractEndDate: '',
+    personType: 'morador',
   });
   const [showCamera, setShowCamera] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -91,6 +94,18 @@ export const Residents = () => {
     dependente: 'Familiar',
   };
 
+  const PERSON_TYPE_LABELS: Record<string, string> = {
+    morador: 'Morador',
+    empregado: 'Empregado(a) doméstico(a)',
+    prestador: 'Prestador de serviço fixo',
+  };
+
+  const isNonResident = (resident: Resident) =>
+    resident.personType === 'empregado' || resident.personType === 'prestador';
+
+  const getPersonTypeLabel = (resident: Resident) =>
+    isNonResident(resident) ? PERSON_TYPE_LABELS[resident.personType as string] : undefined;
+
   const getContractTypeLabel = (type?: string) => (type ? CONTRACT_TYPE_LABELS[type] || 'Vínculo' : '-');
 
   const getContractEndDateLabel = (endDate?: string) =>
@@ -108,6 +123,7 @@ export const Residents = () => {
 
   const matchesContractFilter = (resident: Resident) => {
     if (contractFilter === 'all') return true;
+    if (isNonResident(resident)) return false;
     if (contractFilter === 'tenants') return resident.contractType === 'inquilino';
     const daysLeft = getContractDaysLeft(resident.contractEndDate);
     if (daysLeft === null) return false;
@@ -135,22 +151,38 @@ export const Residents = () => {
     }).length,
   };
 
+  const personFilterOptions: { value: PersonFilter; label: string }[] = [
+    { value: 'all', label: 'Todos' },
+    { value: 'residents', label: 'Moradores' },
+    { value: 'staff', label: 'Empregados e Prestadores' },
+  ];
+
+  const personFilterCounts: Record<PersonFilter, number> = {
+    all: residents.length,
+    residents: residents.filter(r => !isNonResident(r)).length,
+    staff: residents.filter(r => isNonResident(r)).length,
+  };
+
   const activeContractFilterLabel =
     contractFilterOptions.find(o => o.value === contractFilter)?.label || 'Todos';
 
+  const activePersonFilterLabel =
+    personFilterOptions.find(o => o.value === personFilter)?.label || 'Todos';
+
   const emptyListMessage =
     residents.length === 0
-      ? 'Nenhum morador cadastrado ainda'
-      : contractFilter !== 'all'
-        ? `Nenhum morador no filtro "${activeContractFilterLabel}"${searchTerm ? ` para "${searchTerm}"` : ''}`
-        : `Nenhum morador encontrado para "${searchTerm}"`;
+      ? 'Nenhum cadastro ainda'
+      : contractFilter !== 'all' || personFilter !== 'all'
+        ? `Nenhum registro no filtro "${activePersonFilterLabel}"${activeContractFilterLabel !== 'Todos' ? ` / "${activeContractFilterLabel}"` : ''}${searchTerm ? ` para "${searchTerm}"` : ''}`
+        : `Nenhum registro encontrado para "${searchTerm}"`;
 
   const filteredResidents = residents.filter(resident => {
     const matchesSearch =
       resident.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       resident.apartment.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (resident.cpf || '').includes(searchTerm);
-    return matchesSearch && matchesContractFilter(resident);
+    const matchesPerson = personFilter === 'all' ? true : personFilter === 'staff' ? isNonResident(resident) : !isNonResident(resident);
+    return matchesSearch && matchesContractFilter(resident) && matchesPerson;
   });
   const totalPages = Math.ceil(filteredResidents.length / itemsPerPage);
   const paginatedResidents = filteredResidents.slice(
@@ -234,6 +266,7 @@ export const Residents = () => {
       vehicleTag: resident.vehicleTag || '',
       contractType: resident.contractType || '',
       contractEndDate: resident.contractEndDate || '',
+      personType: resident.personType || 'morador',
     });
     setIsDialogOpen(true);
   };
@@ -391,7 +424,7 @@ export const Residents = () => {
     const doc = new jsPDF({ orientation: 'landscape' });
     doc.text('Lista de Moradores', 14, 15);
     doc.text(`Data: ${format(new Date(), 'dd/MM/yyyy HH:mm', { locale: ptBR })}`, 14, 22);
-    doc.text(`Filtro: ${activeContractFilterLabel}${searchTerm ? ` | Busca: "${searchTerm}"` : ''} (${filteredResidents.length} registro(s))`, 14, 29);
+    doc.text(`Filtro: ${activeContractFilterLabel}${personFilter !== 'all' ? ` + ${activePersonFilterLabel}` : ''}${searchTerm ? ` | Busca: "${searchTerm}"` : ''} (${filteredResidents.length} registro(s))`, 14, 29);
 
     const tableData = filteredResidents.map(resident => [
       resident.name,
@@ -400,7 +433,7 @@ export const Residents = () => {
       resident.phone || '-',
       resident.email || '-',
       resident.vehiclePlate ? `${resident.vehiclePlate} - ${resident.vehicleModel || ''}` : '-',
-      getContractTypeLabel(resident.contractType),
+      getPersonTypeLabel(resident) || getContractTypeLabel(resident.contractType),
       getContractEndDateLabel(resident.contractEndDate),
     ]);
 
@@ -415,9 +448,9 @@ export const Residents = () => {
   };
 
   const exportResidentsToCSV = () => {
-    const headers = ['Nome', 'Apt', 'CPF', 'Telefone', 'E-mail', 'Veículo', 'Vínculo', 'Venc. Contrato'];
+    const headers = ['Nome', 'Tipo', 'Apt', 'CPF', 'Telefone', 'E-mail', 'Veículo', 'Vínculo', 'Venc. Contrato'];
     const rows = filteredResidents.map(resident => [
-      resident.name, resident.apartment, resident.cpf || '-', resident.phone || '-',
+      resident.name, getPersonTypeLabel(resident) || 'Morador', resident.apartment, resident.cpf || '-', resident.phone || '-',
       resident.email || '-', resident.vehiclePlate ? `${resident.vehiclePlate} - ${resident.vehicleModel || ''}` : '-',
       getContractTypeLabel(resident.contractType),
       getContractEndDateLabel(resident.contractEndDate),
@@ -441,6 +474,7 @@ export const Residents = () => {
       vehicleTag: '',
       contractType: '',
       contractEndDate: '',
+      personType: 'morador',
     });
     stopCamera();
     setIsDialogOpen(false);
@@ -561,6 +595,22 @@ export const Residents = () => {
               />
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground mr-1">Tipo:</span>
+              {personFilterOptions.map(option => (
+                <Button
+                  key={option.value}
+                  size="sm"
+                  variant={personFilter === option.value ? 'default' : 'outline'}
+                  onClick={() => {
+                    setPersonFilter(option.value);
+                    setCurrentPage(1);
+                  }}
+                >
+                  {option.label} ({personFilterCounts[option.value]})
+                </Button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-muted-foreground mr-1">Filtro de contratos:</span>
               {contractFilterOptions.map(option => (
                 <Button
@@ -629,7 +679,11 @@ export const Residents = () => {
                         )}
                       </TableCell>
                       <TableCell>
-                        {resident.contractType || resident.contractEndDate ? (
+                        {isNonResident(resident) ? (
+                          <Badge variant="outline" className="text-[10px]">
+                            {getPersonTypeLabel(resident)}
+                          </Badge>
+                        ) : resident.contractType || resident.contractEndDate ? (
                           <div className="space-y-1">
                             <Badge variant="outline" className="text-[10px]">
                               {getContractTypeLabel(resident.contractType)}
@@ -708,6 +762,23 @@ export const Residents = () => {
                       <span className="font-medium">{selectedResident.email || '-'}</span>
                     </div>
                   </div>
+
+                  {isNonResident(selectedResident) && (
+                    <div className="border-t pt-3">
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-semibold">Perfil Funcional</h4>
+                        <Badge variant="outline" className="text-[11px]">
+                          {getPersonTypeLabel(selectedResident)}
+                        </Badge>
+                        <Badge className="bg-success/15 text-success border-success/30 text-[10px]">
+                          Acesso permanente
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Liberado por reconhecimento facial e TAG veicular, sem validade de contrato.
+                      </p>
+                    </div>
+                  )}
 
                   {(selectedResident.vehiclePlate || selectedResident.vehicleModel || selectedResident.vehicleColor || selectedResident.vehicleTag) && (
                     <div className="border-t pt-3">
@@ -807,7 +878,11 @@ export const Residents = () => {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto" onInteractOutside={(e) => e.preventDefault()} onEscapeKeyDown={(e) => e.preventDefault()}>
           <DialogHeader>
-            <DialogTitle>{editingId ? 'Editar Morador' : 'Cadastro de Morador'}</DialogTitle>
+            <DialogTitle>
+              {editingId
+                ? (formData.personType === 'morador' ? 'Editar Morador' : 'Editar Cadastro')
+                : (formData.personType === 'morador' ? 'Cadastro de Morador' : 'Novo Cadastro')}
+            </DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -870,6 +945,26 @@ export const Residents = () => {
                   </div>
                 </div>
               )}
+
+              {/* Person Type */}
+              <div className="space-y-2 md:col-span-3">
+                <Label htmlFor="personType">Tipo de Pessoa</Label>
+                <Select value={formData.personType} onValueChange={(value) => setFormData({ ...formData, personType: value as 'morador' | 'empregado' | 'prestador' })}>
+                  <SelectTrigger id="personType" className="w-full">
+                    <SelectValue placeholder="Selecione o tipo..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="morador">Morador(a)</SelectItem>
+                    <SelectItem value="empregado">Empregado(a) doméstico(a)</SelectItem>
+                    <SelectItem value="prestador">Prestador de serviço fixo</SelectItem>
+                  </SelectContent>
+                </Select>
+                {formData.personType !== 'morador' && (
+                  <p className="text-xs text-muted-foreground">
+                    Acesso permanente por reconhecimento facial e TAG veicular, sem contrato.
+                  </p>
+                )}
+              </div>
 
               {/* Personal Info */}
               <div className="space-y-2">
@@ -970,34 +1065,38 @@ export const Residents = () => {
                 </div>
               </div>
 
-              {/* Residential Profile */}
-              <div className="space-y-2">
-                <Label htmlFor="contractType">Tipo de Vínculo</Label>
-                <Select value={formData.contractType} onValueChange={(value) => setFormData({ ...formData, contractType: value })}>
-                  <SelectTrigger id="contractType" className="w-full">
-                    <SelectValue placeholder="Selecione o vínculo..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="proprietario">Proprietário</SelectItem>
-                    <SelectItem value="inquilino">Inquilino</SelectItem>
-                    <SelectItem value="dependente">Dependente</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="contractEndDate">Vencimento do Contrato</Label>
-                <Input
-                  id="contractEndDate"
-                  type="date"
-                  value={formData.contractEndDate}
-                  onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })}
-                />
-              </div>
+              {/* Residential Profile (somente moradores) */}
+              {formData.personType === 'morador' && (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="contractType">Tipo de Vínculo</Label>
+                    <Select value={formData.contractType} onValueChange={(value) => setFormData({ ...formData, contractType: value })}>
+                      <SelectTrigger id="contractType" className="w-full">
+                        <SelectValue placeholder="Selecione o vínculo..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="proprietario">Proprietário</SelectItem>
+                        <SelectItem value="inquilino">Inquilino</SelectItem>
+                        <SelectItem value="dependente">Dependente</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="contractEndDate">Vencimento do Contrato</Label>
+                    <Input
+                      id="contractEndDate"
+                      type="date"
+                      value={formData.contractEndDate}
+                      onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex space-x-2">
               <Button type="submit" className="flex-1">
                 <Save className="h-4 w-4 mr-2" />
-                {editingId ? 'Salvar Alterações' : 'Cadastrar Morador'}
+                {editingId ? 'Salvar Alterações' : (formData.personType === 'morador' ? 'Cadastrar Morador' : 'Cadastrar')}
               </Button>
               <Button type="button" variant="secondary" onClick={resetForm}>
                 <X className="h-4 w-4 mr-2" />
