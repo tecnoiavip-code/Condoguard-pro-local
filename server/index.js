@@ -2,8 +2,10 @@ import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import https from 'node:https';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import selfsigned from 'selfsigned';
 import {
   db, now, genId, hashPassword, verifyPassword,
   createUser, getUserByEmail, getUserById, getUserRoles,
@@ -28,6 +30,63 @@ registerControlidWebhook(app, { db, now, genId, notifyRealtime, PHOTOS_DIR });
 app.use(express.json({ limit: '50mb' }));
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+
+// ---------- HTTPS (PWA do morador na rede local) ----------
+const HTTPS_PORT = Number(process.env.PORTALGUARD_HTTPS_PORT) || 8443;
+const CERTS_DIR = path.join(DATA_DIR, 'certs');
+
+function currentIPv4s() {
+  const ips = [];
+  const nets = os.networkInterfaces();
+  for (const list of Object.values(nets)) {
+    for (const info of list || []) {
+      if (info.family === 'IPv4' && !info.internal) ips.push(info.address);
+    }
+  }
+  return [...new Set(ips)].sort();
+}
+
+function savedIPs() {
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(CERTS_DIR, 'ips.json'), 'utf8'));
+    return Array.isArray(meta.ips) ? meta.ips : [];
+  } catch { /* sem meta ainda */ }
+  return [];
+}
+
+// Certificado self-signed com SANs (hostname + IPs atuais). O morador instala
+// esse certificado como "autoridade de certificação" no celular para o HTTPS
+// virar contexto seguro e o Portal do Morador poder ser instalado como app.
+async function ensureSelfSignedCert() {
+  fs.mkdirSync(CERTS_DIR, { recursive: true });
+  const keyPath = path.join(CERTS_DIR, 'server.key');
+  const certPath = path.join(CERTS_DIR, 'server.crt');
+  const ips = currentIPv4s();
+  const saved = savedIPs();
+  const sameIPs = saved.length === ips.length && saved.every((ip, i) => ip === ips[i]);
+  if (fs.existsSync(keyPath) && fs.existsSync(certPath) && sameIPs) {
+    return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
+  }
+  const hostname = os.hostname() || 'portalguard-local';
+  const altNames = [
+    { type: 2, value: hostname },
+    { type: 2, value: 'localhost' },
+    { type: 7, ip: '127.0.0.1' },
+    ...ips.map((ip) => ({ type: 7, ip })),
+  ];
+  const pems = await selfsigned.generate(
+    [
+      { name: 'commonName', value: hostname },
+      { name: 'organizationName', value: 'PortalGuard Local' },
+    ],
+    { keySize: 2048, algorithm: 'sha256', days: 3650, extensions: [{ name: 'subjectAltName', altNames }] }
+  );
+  fs.writeFileSync(keyPath, pems.private);
+  fs.writeFileSync(certPath, pems.cert);
+  fs.writeFileSync(path.join(CERTS_DIR, 'ips.json'), JSON.stringify({ ips }));
+  console.log(`[portalguard-local] Certificado gerado em ${CERTS_DIR}`);
+  return { key: pems.private, cert: pems.cert };
+}
 
 const KNOWN_TABLES = new Set([
   'access_entries', 'announcement_attachments', 'announcement_reads', 'announcements',
@@ -803,19 +862,25 @@ app.post('/api/admin/clear', authMiddleware, (req, res) => {
   res.json({ data: { ok: true }, error: null });
 });
 
-// ---------- Info de rede (para o configurador Control iD) ----------
+// ---------- Info de rede (para o configurador Control iD e acesso do morador) ----------
 app.get('/api/network-info', (req, res) => {
-  const port = req.socket.localPort || Number(process.env.PORTALGUARD_PORT || process.env.PORT || 8080);
-  const addresses = [];
-  const nets = os.networkInterfaces();
-  for (const list of Object.values(nets)) {
-    for (const info of list || []) {
-      if (info.family === 'IPv4' && !info.internal) addresses.push(info.address);
-    }
-  }
+  const port = Number(process.env.PORTALGUARD_PORT || process.env.PORT || 8080);
+  const addresses = currentIPv4s();
   const rank = (ip) => ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 2 : 3;
   addresses.sort((a, b) => rank(a) - rank(b));
-  res.json({ data: { host: addresses[0] || '127.0.0.1', port, addresses }, error: null });
+  res.json({ data: { host: addresses[0] || '127.0.0.1', port, httpsPort: HTTPS_PORT, addresses }, error: null });
+});
+
+// Download do certificado para instalar no celular (HTTPS fica seguro e o app
+// instala). Mesma rota no HTTP e no HTTPS.
+app.get('/cert/ca', (req, res) => {
+  const certPath = path.join(CERTS_DIR, 'server.crt');
+  if (!fs.existsSync(certPath)) {
+    return res.status(404).json({ error: { message: 'Certificado não disponível ainda' } });
+  }
+  res.setHeader('Content-Type', 'application/x-x509-ca-cert');
+  res.setHeader('Content-Disposition', 'attachment; filename="PortalGuard-Local-CA.crt"');
+  res.sendFile(certPath);
 });
 
 // ---------- Static (build do frontend) ----------
@@ -832,5 +897,21 @@ app.listen(PORT, () => {
   console.log(`[portalguard-local] Servidor rodando em http://127.0.0.1:${PORT}`);
   console.log(`[portalguard-local] Login padrão: ${admin.email} / ${process.env.ADMIN_PASSWORD || 'portaguard@2024'}`);
 });
+
+// HTTPS (PWA do morador): certificado gerado na primeira execução.
+const disableHttps = process.env.PORTALGUARD_DISABLE_HTTPS === '1' || process.env.PORTALGUARD_DISABLE_HTTPS === 'true';
+if (!disableHttps) {
+  (async () => {
+    try {
+      const tls = await ensureSelfSignedCert();
+      https.createServer({ key: tls.key, cert: tls.cert }, app).listen(HTTPS_PORT, () => {
+        console.log(`[portalguard-local] HTTPS (Portal do Morador/PWA) em https://127.0.0.1:${HTTPS_PORT}`);
+        console.log(`[portalguard-local] Instale o certificado no celular: abra http://<IP-do-PC>:${PORT}/cert/ca no navegador do celular`);
+      });
+    } catch (e) {
+      console.error('[portalguard-local] Não foi possível iniciar HTTPS:', e.message);
+    }
+  })();
+}
 
 export default app;
