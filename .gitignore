@@ -21,6 +21,10 @@ src-tauri/binaries/
 # Distribuicao gerada por npm run release
 Instalador/
 
+# Tunel cloudflare (binario / logs)
+tools/cloudflared.exe
+tools/*.log
+
 # Dados locais (banco SQLite + fotos)
 data/
 
