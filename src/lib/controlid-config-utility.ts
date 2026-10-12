@@ -50,17 +50,18 @@ const WEBHOOK_PATH=${JSON.stringify(WEBHOOK_PATH)};
 const log=m=>{document.getElementById('log').textContent+=m+'\\n'};
 function serverHost(){return document.getElementById('srv').value.trim().replace(/^https?:\\/\\//i,'').replace(/\\/.*$/,'')}
 function splitHost(v){const b=v.match(/^\\[([^\\]]+)\\](?::(\\d+))?$/);if(b)return[b[1],b[2]||'8080'];const i=v.lastIndexOf(':');if(i>-1&&/^\\d+$/.test(v.slice(i+1)))return[v.slice(0,i),v.slice(i+1)];return[v,'8080']}
-function makeConfig(){const parts=splitHost(serverHost());const hostname=parts[0];const port=String(parts[1]);const url='http://'+hostname+':'+port+WEBHOOK_PATH;return{url,config:{monitor:{request_timeout:'15000',hostname,port,path:WEBHOOK_PATH},push_server:{push_remote_address:url,push_request_timeout:'15000',push_request_period:'5'},general:{online:'1',local_identification:'1'}}}}
+function makeConfig(){const parts=splitHost(serverHost());const hostname=parts[0];const port=String(parts[1]);const url='http://'+hostname+':'+port+WEBHOOK_PATH;return{url,host:hostname,port,config:{monitor:{request_timeout:'15000',hostname,port,path:WEBHOOK_PATH},push_server:{push_remote_address:url,push_request_timeout:'15000',push_request_period:'5'},general:{online:'1',local_identification:'1'}}}}
 async function post(ip,path,body){const r=await fetch('http://'+ip+'/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const t=await r.text();if(!r.ok)throw new Error(path+' HTTP '+r.status+' '+t);try{return JSON.parse(t)}catch{return {}}}
-async function ensureOnlineServer(ip,s,onlineUrl){
+async function ensureOnlineServer(ip,s,onlineHost,onlinePort){
+const host=onlineHost,prt=String(onlinePort);
 const loaded=await post(ip,'load_objects.fcgi?session='+s,{object:'devices',fields:['id','name','ip']});
 const list=(loaded&&loaded.devices)||[];
+async function upsert(vals){if(list.length>0){const sid=list[0].id;await post(ip,'create_or_modify_objects.fcgi?session='+s,{object:'devices',values:[{id:sid,name:'PortalGuard',...vals}]});return sid}const c=await post(ip,'create_objects.fcgi?session='+s,{object:'devices',values:[{name:'PortalGuard',public_key:'',...vals}]});return c.ids&&c.ids[0]}
 let sid=null;
-if(list.length>0){sid=list[0].id;await post(ip,'create_or_modify_objects.fcgi?session='+s,{object:'devices',values:[{id:sid,name:'PortalGuard',ip:onlineUrl}]});log('['+ip+'] servidor online atualizado (id '+sid+')')}
-else{const c=await post(ip,'create_objects.fcgi?session='+s,{object:'devices',values:[{name:'PortalGuard',ip:onlineUrl,public_key:''}]});sid=c.ids&&c.ids[0];log('['+ip+'] servidor online criado (id '+sid+')')}
+try{sid=await upsert({ip:host,port:prt})}catch(e){log('['+ip+'] campo porta nao aceito, gravando so o host');sid=await upsert({ip:host})}
 if(!sid)throw new Error('não foi possível registrar o servidor online');
 await post(ip,'set_configuration.fcgi?session='+s,{general:{online:'1',local_identification:'1',ihm_enterprise_mode:'0'},online_client:{server_id:String(sid),extract_template:'0',max_request_attempts:'3'}});
-log('['+ip+'] modo online (Pro) ativado ✔')}
+log('['+ip+'] servidor online gravado ('+host+':'+prt+') e modo online (Pro) ativado ✔')}
 async function run(){document.getElementById('log').textContent='';
 const mc=makeConfig();
 const ips=document.getElementById('ips').value.split(/\\s+/).filter(Boolean);
@@ -69,7 +70,7 @@ for(const ip of ips){try{log('['+ip+'] login...');
 const s=(await post(ip,'login.fcgi',{login:document.getElementById('u').value,password:document.getElementById('p').value})).session;
 if(!s)throw new Error('sessão não retornada (usuário/senha?)');
 await post(ip,'set_configuration.fcgi?session='+s,mc.config);log('['+ip+'] Servidor Push e Monitor gravados ✔');
-try{await ensureOnlineServer(ip,s,mc.url)}catch(e){log('['+ip+'] AVISO: modo online falhou: '+e.message)}
+try{await ensureOnlineServer(ip,s,mc.host,mc.port)}catch(e){log('['+ip+'] AVISO: modo online falhou: '+e.message)}
 if(document.getElementById('rb').checked){try{await post(ip,'reboot.fcgi?session='+s)}catch(e){}log('['+ip+'] reiniciando...')}
 }catch(e){log('['+ip+'] ERRO: '+e.message+' — confira IP, rede e se o modo iDCloud está desligado.')}}
 log('Concluído.')}
