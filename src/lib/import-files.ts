@@ -439,6 +439,24 @@ export function parsePdfBackupLines(lines: PdfLine[]): ParsedCollections {
 }
 
 /**
+ * Detecta a origem de um PDF que não foi reconhecido como dados importáveis:
+ * 'backup' = backup gerado pelo app atual (Trecho 'PortalGuard - Backup de Dados'),
+ * 'legacy' = backup antigo (ex.: 'PortalGuard Pro - Backup Completo'), ou null.
+ */
+export function detectBackupSignature(lines: PdfLine[]): 'backup' | 'legacy' | null {
+  let sawCurrent = false;
+  let sawLegacy = false;
+  for (const line of lines) {
+    const joined = normKey(line.cells.map(c => c.str).join(' '));
+    if (joined.includes('backup de dados')) sawCurrent = true;
+    if (joined.includes('portalguard pro') && joined.includes('backup completo')) sawLegacy = true;
+  }
+  if (sawCurrent) return 'backup';
+  if (sawLegacy) return 'legacy';
+  return null;
+}
+
+/**
  * Parser generico para PDFs que nao sao o backup do app: tenta extrair
  * moradores de linhas rotuladas ("Nome: ... Apartamento: ...") ou tabulares.
  */

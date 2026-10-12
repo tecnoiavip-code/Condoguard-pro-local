@@ -19,6 +19,7 @@ import {
   parseGenericPdfLines,
   mergeCollections,
   collectionsCount,
+  detectBackupSignature,
   type ImportCollection,
 } from '@/lib/import-files';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -191,7 +192,14 @@ export const Settings = () => {
     
     // Save PDF
     doc.save(`portalguard-backup-${new Date().toISOString().split('T')[0]}.pdf`);
-    toast.success('Backup em PDF gerado com sucesso!');
+    if (residents.length === 0 && mails.length === 0 && entries.length === 0) {
+      toast.warning(
+        'Nenhum registro para exportar — o PDF conterá apenas os cabeçalhos. Gere um novo backup após restaurar os dados ou use o backup JSON.',
+        { duration: 8000 }
+      );
+    } else {
+      toast.success('Backup em PDF gerado com sucesso!');
+    }
   };
 
   // Todas as tabelas de dados a serem incluídas no backup completo
@@ -305,7 +313,7 @@ export const Settings = () => {
           if (failedTables.length > 0) {
             console.warn('[restore] Tabelas com falhas em alguns registros:', failedTables);
             toast.warning(
-              `Atenção: ${totalFail} registro(s) em ${failedTables.length} tabela(s) apresentaram erros (detalhes no console).`
+              `Atenção: ${totalFail} registro(s) em ${failedTables.length} tabela(s) (${failedTables.map(t => t.table).join(', ')}) apresentaram erros (detalhes no console).`
             );
           }
           if (totalOk === 0 && totalFail === 0) {
@@ -434,7 +442,7 @@ export const Settings = () => {
       }
       if (failedTables.length > 0) {
         console.warn('[restore] Tabelas com falhas em alguns registros:', failedTables);
-        toast.warning(`Atenção: ${totalFail} registro(s) apresentaram erros (detalhes no console).`);
+        toast.warning(`Atenção: ${totalFail} registro(s) em ${failedTables.length} tabela(s) (${failedTables.map(t => t.table).join(', ')}) apresentaram erros (detalhes no console).`);
       } else if (totalOk === 0) {
         toast.warning('Nenhum registro pôde ser importado dos arquivos CSV.');
       }
@@ -460,6 +468,8 @@ export const Settings = () => {
 
       const all: Partial<Record<ImportCollection, Record<string, any>[]>> = {};
       let recognizedFiles = 0;
+      const emptyBackups: string[] = [];
+      const legacyBackups: string[] = [];
 
       for (const file of files) {
         try {
@@ -474,7 +484,10 @@ export const Settings = () => {
             : parseGenericPdfLines(lines);
 
           if (collectionsCount(merged.collections) === 0) {
-            toast.warning(`Nenhum dado reconhecido em ${file.name}.`, { duration: 8000 });
+            const signature = detectBackupSignature(lines);
+            if (signature === 'backup') emptyBackups.push(file.name);
+            else if (signature === 'legacy') legacyBackups.push(file.name);
+            else toast.warning(`Nenhum dado reconhecido em ${file.name}.`, { duration: 8000 });
             continue;
           }
 
@@ -484,6 +497,22 @@ export const Settings = () => {
           console.error('PDF import error:', error);
           toast.error(`Erro ao processar ${file.name}. Tente um formato diferente.`);
         }
+      }
+
+      if (recognizedFiles === 0 && emptyBackups.length > 0) {
+        toast.error(
+          `O(s) PDF(s) de backup está/estão vazio(s) (não contêm registros): ${emptyBackups.join(', ')}. Gere um novo backup com dados ou use o backup JSON.`,
+          { duration: 10000 }
+        );
+        return;
+      }
+
+      if (recognizedFiles === 0 && legacyBackups.length > 0) {
+        toast.warning(
+          'O(s) PDF(s) indicado(s) usam o formato antigo de backup, que não é mais suportado. Use o backup JSON completo gerado pela versão atual.',
+          { duration: 10000 }
+        );
+        return;
       }
 
       if (recognizedFiles === 0) {
@@ -502,7 +531,7 @@ export const Settings = () => {
       }
       if (failedTables.length > 0) {
         console.warn('[restore] Tabelas com falhas em alguns registros:', failedTables);
-        toast.warning(`Atenção: ${totalFail} registro(s) apresentaram erros (detalhes no console).`);
+        toast.warning(`Atenção: ${totalFail} registro(s) em ${failedTables.length} tabela(s) (${failedTables.map(t => t.table).join(', ')}) apresentaram erros (detalhes no console).`);
       } else if (totalOk === 0) {
         toast.warning('Nenhum registro pôde ser importado dos PDFs.');
       }

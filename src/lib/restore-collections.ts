@@ -194,20 +194,25 @@ export async function restoreCollections(
     return null;
   };
 
+  // A origem costuma referenciar usuários que não existem no destino (ex.: preview web).
+  // Em vez de nular (o que viola colunas NOT NULL como notifications.user_id e
+  // announcements.created_by), reatribui ao primeiro usuário válido local.
+  const fallbackUserId = validUserIds.values().next().value as string | undefined;
+
   const sanitizeRow = (table: string, row: Record<string, any>) => {
     const sanitized = { ...row };
 
     for (const field of AUTH_USER_FK_FIELDS) {
       if (sanitized[field] && typeof sanitized[field] === 'string') {
         if (!validUserIds.has(sanitized[field])) {
-          sanitized[field] = null;
+          sanitized[field] = fallbackUserId ?? null;
         }
       }
     }
 
     if ((table === 'realtime_events' || table === 'notifications') && sanitized.user_id) {
       if (!validUserIds.has(sanitized.user_id)) {
-        sanitized.user_id = null;
+        sanitized.user_id = fallbackUserId ?? null;
       }
     }
 
