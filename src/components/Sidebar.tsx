@@ -61,7 +61,7 @@ export const Sidebar = ({ activeSection, onSectionChange, isOpen }: SidebarProps
                       )}
                     >
                       <Icon className="h-5 w-5" />
-                      <span className="flex-1 text-lg">{item.label}</span>
+                      <span className="flex-1">{item.label}</span>
                     </button>
                   );
                 })}
