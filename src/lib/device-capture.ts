@@ -1,5 +1,6 @@
 import { Device } from '@/types';
 import { supabase } from '@/integrations/supabase/client';
+import { compressImage } from '@/lib/image-utils';
 
 export function hashCode(str: string): number {
   let hash = 0;
@@ -207,16 +208,6 @@ export async function capturePhotoFromDevice(
   try {
     checkAbort();
 
-    // Step 1: Remove existing user on device (to update data if re-enrolling)
-    try {
-      await queueCommandAndWait(serial, 'destroy_objects', {
-        object: 'users',
-        where: { users: { id: deviceUserId } },
-      }, 15000, signal);
-    } catch (e: any) {
-      if (e.name === 'AbortError') throw e;
-    }
-
     checkAbort();
     onStatus(
       persistOnDevice
@@ -224,7 +215,8 @@ export async function capturePhotoFromDevice(
         : 'Criando usuário temporário...',
       'creating_user', 25
     );
-    await queueCommandAndWait(serial, 'create_objects', {
+    // Upsert the user (no destroy) to preserve existing cards/TAGs
+    await queueCommandAndWait(serial, 'create_or_modify_objects', {
       object: 'users',
       values: [{ id: deviceUserId, name: deviceUserName, registration: deviceRegistration }],
     }, 15000, signal);
@@ -235,8 +227,21 @@ export async function capturePhotoFromDevice(
       type: 'face',
       save: true,
       user_id: deviceUserId,
-      panic: false,
     }, 60000, signal);
+
+    // Poll enroller_state until NORMAL_STATE (enroll finished)
+    const enrollDeadline = Date.now() + 60000;
+    while (Date.now() < enrollDeadline) {
+      checkAbort();
+      await new Promise(resolve => setTimeout(resolve, 700));
+      try {
+        const st = await queueCommandAndWait(serial, 'enroller_state', {}, 15000, signal);
+        const state = String(st?.enroller_state || '');
+        if (state === 'NORMAL_STATE') break;
+      } catch (e: any) {
+        if (e.name === 'AbortError') throw e;
+      }
+    }
 
     checkAbort();
     onStatus('Buscando foto capturada...', 'fetching', 70);
@@ -470,8 +475,16 @@ export async function syncBiometricToAllDevices(
     : personInfo.name;
   const deviceRegistration = personInfo.registration || personInfo.document || personInfo.identifier;
 
+  // Os dispositivos Control iD esperam JPEG: reencoda caso a foto venha em
+  // outro formato (ex.: WebP otimizado para o Storage)
+  let readyPhoto = photoBase64;
+  if (!/^data:image\/jpeg;base64,/i.test(photoBase64)) {
+    const jpeg = await compressImage(photoBase64, { format: 'jpeg', quality: 0.92, maxDimension: 2000 });
+    if (jpeg) readyPhoto = jpeg.dataUrl;
+  }
+
   // Clean base64 for device (remove data URI prefix)
-  const cleanBase64 = photoBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+  const cleanBase64 = readyPhoto.replace(/^data:image\/[a-z]+;base64,/, '');
 
   let synced = 0;
   let errors = 0;
@@ -489,25 +502,22 @@ export async function syncBiometricToAllDevices(
     onProgress?.(`Sincronizando ${device.name} (${i + 1}/${facialDevices.length})...`, i, facialDevices.length);
 
     try {
-      // Remove existing user if present (to update)
-      try {
-        await queueCommandAndWait(serial, 'destroy_objects', {
-          object: 'users',
-          where: { users: { id: deviceUserId } },
-        }, 15000);
-      } catch { /* user may not exist */ }
-
-      // Create user on device
-      await queueCommandAndWait(serial, 'create_objects', {
+      // Upsert the user on the device (create if missing, update if present)
+      // WITHOUT destroying it first: this preserves existing cards and, crucially,
+      // the face template already stored on the device. Destroying here would
+      // erase a working biometric on every edit/save.
+      await queueCommandAndWait(serial, 'create_or_modify_objects', {
         object: 'users',
         values: [{ id: deviceUserId, name: deviceUserName, registration: deviceRegistration }],
       }, 15000);
 
-      // Set the facial image on the device
-      await queueBinaryCommandAndWait(serial, 'user_set_image', cleanBase64, {
-        user_id: deviceUserId,
-        timestamp: Math.floor(Date.now() / 1000),
-      }, 30000);
+      // Set the facial image on the device (only when we have a valid photo)
+      if (cleanBase64) {
+        await queueBinaryCommandAndWait(serial, 'user_set_image', cleanBase64, {
+          user_id: deviceUserId,
+          timestamp: Math.floor(Date.now() / 1000),
+        }, 30000);
+      }
 
       synced++;
       details.push(`${device.name}: ✓ sincronizado`);

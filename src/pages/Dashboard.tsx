@@ -410,9 +410,9 @@ export const Dashboard = () => {
                       className={`flex items-start gap-3 py-3 px-2 relative z-10 group rounded-lg transition-colors ${bgHover}`}
                     >
                       {/* Date & Time */}
-                      <div className="flex-shrink-0 w-[40px] text-right pt-2">
-                        <p className="text-[10px] text-muted-foreground leading-none">{dateStr}</p>
-                        <p className={`text-lg font-bold leading-tight ${timeColor}`}>
+                      <div className="flex-shrink-0 w-[46px] text-right pt-2">
+                        <p className="text-[11px] text-muted-foreground leading-none">{dateStr}</p>
+                        <p className={`text-xl font-bold leading-tight ${timeColor}`}>
                           {timeStr}
                         </p>
                       </div>
@@ -422,17 +422,17 @@ export const Dashboard = () => {
                         className={`flex-shrink-0 z-10 relative ${photoUrl ? 'cursor-pointer' : ''}`}
                         onClick={() => photoUrl && setSelectedPhoto({ url: photoUrl, name: displayLabel, time: fullTimeStr, location })}
                       >
-                        <Avatar className={`h-16 w-16 border-2 ${borderColor} ${photoUrl ? 'hover:ring-2 hover:ring-primary/50 transition-all' : ''}`}>
+                        <Avatar className={`h-24 w-24 border-2 ${borderColor} ${photoUrl ? 'hover:ring-2 hover:ring-primary/50 transition-all' : ''}`}>
                           {photoUrl ? (
                             <AvatarImage src={photoUrl} alt={displayName} className="object-cover" />
                           ) : null}
-                          <AvatarFallback className={`text-base font-bold ${avatarBg}`}>
-                            {isTagEvent ? <Car className="h-6 w-6" /> : userName ? userName.substring(0, 2).toUpperCase() : <User className="h-5 w-5" />}
+                          <AvatarFallback className={`text-2xl font-bold ${avatarBg}`}>
+                            {isTagEvent ? <Car className="h-9 w-9" /> : userName ? userName.substring(0, 2).toUpperCase() : <User className="h-8 w-8" />}
                           </AvatarFallback>
                         </Avatar>
                         {isAccess && (
-                          <div className={`absolute -bottom-1 -right-1 rounded-full p-0.5 ${isRecognized ? 'bg-success text-success-foreground' : 'bg-destructive text-destructive-foreground'}`}>
-                            {isTagEvent ? <Car className="h-3.5 w-3.5" /> : isRecognized ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+                          <div className={`absolute -bottom-1 -right-1 rounded-full p-1 ${isRecognized ? 'bg-success text-success-foreground' : 'bg-destructive text-destructive-foreground'}`}>
+                            {isTagEvent ? <Car className="h-4 w-4" /> : isRecognized ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
                           </div>
                         )}
                       </div>
@@ -440,30 +440,30 @@ export const Dashboard = () => {
                       {/* Info */}
                       <div className="flex-1 min-w-0 pt-1">
                         <div className="flex items-center gap-2">
-                          <p className={`text-sm font-bold truncate leading-tight ${nameColor}`}>
+                          <p className={`text-lg font-bold truncate leading-tight ${nameColor}`}>
                             {displayLabel}
                           </p>
                           {isAccess && (
-                            <Badge variant={isRecognized ? 'default' : 'secondary'} className={`text-[9px] px-1.5 py-0 shrink-0 ${isRecognized ? 'bg-success/15 text-success border-success/30 hover:bg-success/20' : 'bg-destructive/15 text-destructive border-destructive/30 hover:bg-destructive/20'}`}>
+                            <Badge variant={isRecognized ? 'default' : 'secondary'} className={`text-[11px] px-2 py-0.5 shrink-0 ${isRecognized ? 'bg-success/15 text-success border-success/30 hover:bg-success/20' : 'bg-destructive/15 text-destructive border-destructive/30 hover:bg-destructive/20'}`}>
                               {isTagEvent ? (isRecognized ? 'TAG Identificada' : 'TAG Desconhecida') : (isRecognized ? 'Identificado' : 'Não identificado')}
                             </Badge>
                           )}
                         </div>
                         <div className="flex items-center gap-1 mt-1">
                           {isTagEvent ? (
-                            <Car className={`h-3 w-3 flex-shrink-0 ${isRecognized ? 'text-success' : 'text-destructive'}`} />
+                            <Car className={`h-4 w-4 flex-shrink-0 ${isRecognized ? 'text-success' : 'text-destructive'}`} />
                           ) : isRecognized ? (
-                            <CheckCheck className="h-3 w-3 text-success flex-shrink-0" />
+                            <CheckCheck className="h-4 w-4 text-success flex-shrink-0" />
                           ) : isUnidentified ? (
-                            <ShieldAlert className="h-3 w-3 text-destructive flex-shrink-0" />
+                            <ShieldAlert className="h-4 w-4 text-destructive flex-shrink-0" />
                           ) : (
-                            <Radio className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                            <Radio className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                           )}
-                          <p className="text-[11px] text-muted-foreground truncate">
+                          <p className="text-sm text-muted-foreground truncate">
                             {location}
                           </p>
                         </div>
-                        <p className="text-[10px] text-muted-foreground mt-0.5">{fullTimeStr}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{fullTimeStr}</p>
                       </div>
                     </div>
                   );

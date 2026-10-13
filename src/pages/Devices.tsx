@@ -219,7 +219,7 @@ export const Devices = () => {
           <Button
             variant="outline"
             onClick={async () => {
-              await downloadControlIdUtility(devices.map(d => d.ipAddress).filter(Boolean) as string[]);
+              await downloadControlIdUtility(devices.filter(d => d.ipAddress).map(d => ({ ip: d.ipAddress as string, name: d.name })));
               toast.success('Configurador baixado', { description: 'Abra o arquivo no PC da portaria, na mesma rede dos equipamentos.' });
             }}
           >
