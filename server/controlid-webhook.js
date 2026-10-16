@@ -164,44 +164,39 @@ function extractDeviceId(urlPath, query, payload, req) {
   return '';
 }
 
-function buildIdentificationActions(payload, deviceType) {
+function buildIdentificationActions(payload) {
   const portalId = Number.parseInt(String(payload?.portal_id ?? '1'), 10);
   const resolvedPortal = Number.isFinite(portalId) && portalId > 0 ? portalId : 1;
 
-  if (deviceType === 'vehicle_tag') {
-    return [
-      { action: 'sec_box', parameters: 'id=65793, reason=1' },
-      { action: 'door', parameters: `door=${resolvedPortal}` },
-    ];
-  }
-
-  return [{ action: 'sec_box', parameters: 'id=65793, reason=1' }];
+  // Sempre envia os DOIS pulsos: o relé interno do leitor (door) e o acionador
+  // externo SecBox. Algumas instalações ligam a fechadura/cancela ao contato seco
+  // da própria placa, e enviar apenas o sec_box deixa o relé interno sem atracar.
+  return [
+    { action: 'sec_box', parameters: 'id=65793, reason=1' },
+    { action: 'door', parameters: `door=${resolvedPortal}` },
+  ];
 }
 
-function buildIdentificationResponse(payload, urlPath, deviceType) {
+// Só é chamada quando o motor central autorizou. A decisão do banco é a juíza:
+// um morador encontrado (por TAG/vehicle_tag ou por nome) é liberado mesmo que o
+// equipamento tenha enviado event 3 (TAG não gravada na memória do leitor).
+function buildIdentificationResponse(payload, urlPath, deviceType, decision) {
   const userId = Number.parseInt(String(payload?.user_id ?? '0'), 10);
   const portalId = Number.parseInt(String(payload?.portal_id ?? '1'), 10);
-  const incomingEvent = Number.parseInt(String(payload?.event ?? '0'), 10);
   const userName = sanitizeString(payload?.user_name || payload?.name || '', 200);
-
-  const isIdentified = (Number.isFinite(userId) && userId > 0) || userName.length > 0;
-  const isDeniedByDevice = incomingEvent === 3 || incomingEvent === 6;
-  const granted = isIdentified && !isDeniedByDevice;
+  const residentName = sanitizeString(decision?.resident_name || decision?.resident || '', 200);
 
   const resolvedPortal = Number.isFinite(portalId) && portalId > 0 ? portalId : 1;
 
   const result = {
-    event: granted ? 7 : 6,
+    event: 7,
     user_id: Number.isFinite(userId) ? userId : 0,
-    user_name: userName,
+    user_name: residentName || userName,
     user_image: payload?.user_has_image === 1 || payload?.user_has_image === '1'
       || payload?.user_has_image === true || payload?.user_has_image === 'true',
     portal_id: resolvedPortal,
+    actions: buildIdentificationActions(payload),
   };
-
-  if (granted) {
-    result.actions = buildIdentificationActions(payload, deviceType);
-  }
 
   const shouldWrapResult = String(urlPath).toLowerCase().includes('.fcgi');
   return shouldWrapResult ? { result } : result;
@@ -223,11 +218,15 @@ const evaluateCentralAccess = async (db, payload) => {
     const userName = sanitizeString(payload?.user_name || payload?.name || '', 200);
     let resident = null;
 
-    if (cardValue && cardValue !== '0') {
+    // TAG: consulta os DOIS formatos (com e sem zeros à esquerda), pois o
+    // equipamento pode enviar "0001234" e o banco gravar "1234" (ou o contrário).
+    if ((cardValue && cardValue !== '0') || rawCardValue) {
       const cleanCardValue = sanitizeString(rawCardValue, 100);
+      const candidates = Array.from(new Set([cleanCardValue, cardValue].filter(Boolean)));
+      const placeholders = candidates.map(() => '?').join(',');
       resident = db.prepare(
-        'SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents WHERE vehicle_tag = ? OR vehicle_tag = ? LIMIT 1'
-      ).get(cardValue, cleanCardValue) || null;
+        `SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents WHERE vehicle_tag IN (${placeholders}) LIMIT 1`
+      ).get(...candidates) || null;
     }
 
     if (!resident && userName) {
@@ -246,16 +245,27 @@ const evaluateCentralAccess = async (db, payload) => {
     }
 
     if (resident) {
+      // Dados do morador encontrado retornados junto da decisão para que a
+      // resposta do equipamento use o nome real do banco (event 7).
+      const found = {
+        allow: true,
+        reason: 'Morador ativo',
+        source: 'db',
+        resident: resident.name,
+        resident_name: resident.name,
+        resident_id: resident.id,
+        resolved_user_id: resident.id,
+      };
       if (resident.contract_end_date) {
         const today = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10); // America/Sao_Paulo
         if (resident.contract_end_date < today) {
-          return { allow: false, reason: 'Contrato vencido', source: 'db', resident: resident.name };
+          return { ...found, allow: false, reason: 'Contrato vencido' };
         }
       }
       if (resident.person_type && resident.person_type !== 'morador') {
-        return { allow: true, reason: 'Acesso autorizado - colaborador ativo', source: 'db', resident: resident.name };
+        return { ...found, reason: 'Acesso autorizado - colaborador ativo' };
       }
-      return { allow: true, reason: 'Morador ativo', source: 'db', resident: resident.name };
+      return found;
     }
 
     // Not a resident: check restriction list by name
@@ -878,8 +888,13 @@ export function registerControlidWebhook(app, ctx) {
           Promise.resolve(resolveDeviceType(effectiveDeviceId)),
           evaluateCentralAccess(db, payload),
         ]);
-        const identResponse = decision.allow
-          ? buildIdentificationResponse(payload, urlPath, deviceType)
+        // A decisão do banco é autoritativa. Se o motor central não respondeu a
+        // tempo (fallback/timeout), respeitamos a decisão do próprio equipamento
+        // (event 7 = identificou localmente) para o portão nunca abrir às cegas.
+        const deviceGranted = Number.parseInt(String(payload?.event ?? '0'), 10) === 7;
+        const allowByDb = decision.source === 'db' ? decision.allow : deviceGranted;
+        const identResponse = allowByDb
+          ? buildIdentificationResponse(payload, urlPath, deviceType, decision)
           : buildDeniedResponse(payload, urlPath);
         console.log('Central access decision:', { device_id: effectiveDeviceId, ...decision });
         console.log('Identification response (immediate):', {
