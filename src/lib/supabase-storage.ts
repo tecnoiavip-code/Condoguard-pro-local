@@ -390,6 +390,7 @@ export const supabaseStorage = {
     };
 
     if (isNew) {
+      if (mail.receivedAt) mailData.received_at = mail.receivedAt;
       const { error } = await supabase
         .from('mails')
         .insert(mailData);

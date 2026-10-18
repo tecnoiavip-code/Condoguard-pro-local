@@ -34,6 +34,7 @@ import { useResidents } from '@/hooks/useResidents';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { sendPushToUser } from '@/lib/push-subscription';
+import { compressImage, compressToFile } from '@/lib/image-utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import StandardPagination from '@/components/StandardPagination';
 import jsPDF from 'jspdf';
@@ -85,26 +86,23 @@ export const MailManagement = () => {
     return `https://api.whatsapp.com/send?phone=${phone}&text=${encodedMessage}`;
   };
 
-  const buildWhatsappMessage = ({
+  const buildWhatsappText = ({
     residentName,
     packageType,
     sender,
     trackingCode,
-    hasPhoto,
   }: {
     residentName: string;
     packageType: string;
     sender: string;
     trackingCode?: string | null;
-    hasPhoto?: boolean;
-  }) => encodeURIComponent(
+  }) =>
     `Olá ${residentName}! 📦\n\n` +
+    `Você recebeu uma nova encomenda\n\n` +
     `📋 Tipo: ${packageType}\n` +
     `📤 Remetente: ${sender}\n` +
     (trackingCode ? `🔍 Rastreio: ${trackingCode}\n` : '') +
-    (hasPhoto ? `\n📸 Foto: registrada na portaria\n` : '') +
-    `\nPor favor, retire na portaria. Obrigado!`
-  );
+    `\nPor favor, retire na portaria. Obrigado!`;
 
   const openWhatsappWithFallback = (
     rawPhone: string,
@@ -137,12 +135,71 @@ export const MailManagement = () => {
     }, 1500);
   };
 
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Envia a própria imagem (anexada) junto do texto, usando o compartilhamento nativo.
+  // Se o dispositivo não suportar anexar arquivo, cai para o link normal do WhatsApp.
+  const sendWhatsappWithPhoto = async (
+    rawPhone: string,
+    text: string,
+    photo: File | string | null | undefined,
+    event?: React.MouseEvent<HTMLElement>
+  ) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+
+    let file: File | null = null;
+    try {
+      if (photo instanceof File) {
+        file = photo;
+      } else if (typeof photo === 'string' && photo) {
+        const response = await fetch(photo);
+        const blob = await response.blob();
+        file = new File([blob], `correspondencia_${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' });
+      }
+      if (file && file.type !== 'image/jpeg') {
+        const jpeg = await compressImage(file, { format: 'jpeg', quality: 0.9, maxDimension: 2000 });
+        if (jpeg) file = new File([jpeg.blob], `correspondencia_${Date.now()}.jpg`, { type: 'image/jpeg' });
+      }
+    } catch (error) {
+      console.error('Não foi possível preparar a foto para envio:', error);
+    }
+
+    if (file && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], text });
+        return;
+      } catch (error) {
+        const name = (error as { name?: string })?.name;
+        if (name === 'AbortError') return;
+        console.error('Falha ao compartilhar foto:', error);
+      }
+    }
+
+    if (file) {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast.info('Este navegador não anexa fotos automaticamente. A foto foi baixada e o texto copiado — anexe a foto no WhatsApp.');
+      } catch {
+        toast.info('Este navegador não anexa fotos automaticamente. A foto foi baixada — anexe-a no WhatsApp.');
+      }
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(file);
+      link.download = file.name;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    }
+
+    openWhatsappWithFallback(rawPhone, encodeURIComponent(text));
+  };
+
+  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setPhotoFile(file);
-      setPhotoPreview(URL.createObjectURL(file));
+      const compressed = await compressToFile(file, `correspondencia_${Date.now()}`);
+      const next = compressed ?? file;
+      setPhotoFile(next);
+      setPhotoPreview(URL.createObjectURL(next));
     }
+    e.target.value = '';
   };
 
   const startWebcam = async () => {
@@ -299,20 +356,20 @@ export const MailManagement = () => {
       }
 
       if (!editingMail) {
-        const whatsappMsg = buildWhatsappMessage({
+        const whatsappText = buildWhatsappText({
           residentName: resident.name,
           packageType: mailData.packageType,
           sender: mailData.sender,
           trackingCode: mailData.trackingCode,
-          hasPhoto: Boolean(photoUrl),
         });
         const residentPhone = resident.phone?.replace(/\D/g, '');
+        const photoToSend = photoFile;
 
         if (residentPhone) {
           toast.success(`Correspondência registrada! ${resident.name} foi notificado.`);
           // Redireciona direto ao WhatsApp sem confirmação
           setTimeout(() => {
-            openWhatsappWithFallback(residentPhone, whatsappMsg);
+            void sendWhatsappWithPhoto(residentPhone, whatsappText, photoToSend);
           }, 300);
         } else {
           toast.success(`Correspondência registrada para ${resident.name} (sem telefone cadastrado)`);
@@ -452,10 +509,12 @@ export const MailManagement = () => {
               <div className="space-y-2">
                 <Label htmlFor="residentId">Morador *</Label>
                 <Combobox
-                  options={residents.map((resident) => ({
-                    value: resident.id,
-                    label: `${resident.name} - ${resident.apartment}`,
-                  }))}
+                  options={residents
+                    .filter((resident) => resident.personType !== 'empregado' && resident.personType !== 'prestador')
+                    .map((resident) => ({
+                      value: resident.id,
+                      label: `${resident.name} - ${resident.apartment}`,
+                    }))}
                   value={formData.residentId}
                   onValueChange={(value) => setFormData({ ...formData, residentId: value })}
                   placeholder="Selecione o morador"
@@ -688,23 +747,22 @@ export const MailManagement = () => {
                                 <DropdownMenuContent align="end">
                                   {resident?.phone && (() => {
                                     const phone = resident.phone?.replace(/\D/g, '');
-                                    const msg = buildWhatsappMessage({
+                                    const text = buildWhatsappText({
                                       residentName: resident.name,
                                       packageType: mail.packageType,
                                       sender: mail.sender,
                                       trackingCode: mail.trackingCode,
-                                      hasPhoto: Boolean(mail.photoUrl),
                                     });
-                                    const waUrl = getWhatsappWebUrl(phone, msg);
+                                    const waUrl = getWhatsappWebUrl(phone, encodeURIComponent(text));
                                     return (
                                       <DropdownMenuItem asChild>
                                         <a
                                           href={waUrl}
-                                          onClick={(e) => openWhatsappWithFallback(phone, msg, e)}
+                                          onClick={(e) => void sendWhatsappWithPhoto(phone, text, mail.photoUrl, e)}
                                           className="cursor-pointer"
                                         >
                                           <MessageCircle className="h-4 w-4 mr-2 text-green-600" />
-                                          Enviar WhatsApp
+                                          Enviar WhatsApp {mail.photoUrl ? 'com foto' : ''}
                                         </a>
                                       </DropdownMenuItem>
                                     );
