@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Users, Mail, UserCheck, Clock, Activity, Radio, CheckCheck, User, ShieldCheck, ShieldAlert, X, Car, AlertTriangle } from 'lucide-react';
+import { Users, Mail, UserCheck, Clock, Activity, Radio, CheckCheck, User, ShieldCheck, ShieldAlert, X, Car, AlertTriangle, ScanFace } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { StatsCard } from '@/components/StatsCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -84,7 +84,7 @@ export const Dashboard = () => {
       .select('*')
       .in('event_type', ['dao', 'access_photo', 'identification_event', 'catra_event'])
       .order('received_at', { ascending: false })
-      .limit(50);
+      .limit(30);
     if (data) setControlidLogs(data as ControlidLog[]);
   }, []);
 
@@ -123,7 +123,7 @@ export const Dashboard = () => {
       }, (payload: any) => {
         const newLog = payload.new as ControlidLog;
         if (['dao', 'access_photo', 'identification_event', 'catra_event'].includes(newLog.event_type)) {
-          setControlidLogs(prev => [newLog, ...prev].slice(0, 50));
+          setControlidLogs(prev => [newLog, ...prev].slice(0, 30));
         }
       })
       .subscribe();
@@ -325,11 +325,16 @@ export const Dashboard = () => {
                   const userName = changes.user_name || p.user_name || p.name || '';
                   const cardValue = String(p.card_value || changes.card_value || '');
 
+                  // Nome reconhecido pelo motor facial central (identificação por rosto).
+                  // Sem isso, uma pessoa reconhecida por rosto aparecia como "não identificado".
+                  const faceName = String(p.face_identification?.resident_name || p.face_identification?.name || '').trim();
+                  const effectiveName = userName || faceName;
+
                   // Use ONLY data from the antenna payload — do not cross-reference residents
                   // Parse "APT - NAME" format sent by the device (same as facial recognition)
                   let apartment = '';
-                  let parsedName = userName;
-                  const aptNameMatch = userName.match(/^(\d+\w?)\s*[-–]\s*(.+)$/);
+                  let parsedName = effectiveName;
+                  const aptNameMatch = effectiveName.match(/^(\d+\w?)\s*[-–]\s*(.+)$/);
                   if (aptNameMatch) {
                     apartment = aptNameMatch[1];
                     parsedName = aptNameMatch[2].trim();
@@ -387,12 +392,18 @@ export const Dashboard = () => {
                   
                   const isAccess = ['dao', 'access_photo', 'identification_event', 'catra_event'].includes(log.event_type);
                   const isTagEvent = mappedDeviceType === 'vehicle_tag';
-                  const isRecognized = isAccess && !!userName;
-                  const isUnidentified = isAccess && !userName;
+                  const isRecognized = isAccess && !!effectiveName;
+                  const isUnidentified = isAccess && !effectiveName;
                   const isSystemEvent = !isAccess;
                   // TAG recognized = has userName from device payload
                   const isTagRecognized = isTagEvent && isRecognized;
                   const isTagUnknown = isTagEvent && !isRecognized;
+
+                  // Qual autorização abriu o portão: facial (motor central) ou tag/cartão.
+                  const faceMatched = !!p.face_identification?.matched;
+                  const hasCardValue = cardValue.replace(/^0+/, '') !== '';
+                  const isFacialAuth = isAccess && faceMatched;
+                  const isTagAuth = isAccess && !isFacialAuth && (isTagEvent || hasCardValue);
 
                   const displayName = parsedName || (isTagEvent ? 'TAG não identificada' : log.event_type === 'device_is_alive' ? 'Dispositivo online' : log.event_type === 'door' ? 'Evento de porta' : 'Acesso pela interface web');
                   const displayLabel = apartment && parsedName ? `${apartment} - ${parsedName.toUpperCase()}` : displayName.toUpperCase();
@@ -427,12 +438,12 @@ export const Dashboard = () => {
                             <AvatarImage src={photoUrl} alt={displayName} className="object-cover" />
                           ) : null}
                           <AvatarFallback className={`text-2xl font-bold ${avatarBg}`}>
-                            {isTagEvent ? <Car className="h-9 w-9" /> : userName ? userName.substring(0, 2).toUpperCase() : <User className="h-8 w-8" />}
+                            {isTagEvent ? <Car className="h-9 w-9" /> : effectiveName ? effectiveName.substring(0, 2).toUpperCase() : <User className="h-8 w-8" />}
                           </AvatarFallback>
                         </Avatar>
                         {isAccess && (
                           <div className={`absolute -bottom-1 -right-1 rounded-full p-1 ${isRecognized ? 'bg-success text-success-foreground' : 'bg-destructive text-destructive-foreground'}`}>
-                            {isTagEvent ? <Car className="h-4 w-4" /> : isRecognized ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+                            {isFacialAuth ? <ScanFace className="h-4 w-4" /> : isTagAuth ? <Car className="h-4 w-4" /> : isRecognized ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
                           </div>
                         )}
                       </div>

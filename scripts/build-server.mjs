@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { generateFaceAssets } from './gen-face-assets.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -12,6 +13,9 @@ const binariesDir = join(root, 'src-tauri', 'binaries');
 
 mkdirSync(outDir, { recursive: true });
 mkdirSync(binariesDir, { recursive: true });
+
+// Embeda os binários do motor facial (WASM + modelos) como base64 antes do bundle.
+generateFaceAssets();
 
 await build({
   entryPoints: [join(serverDir, 'index.js')],

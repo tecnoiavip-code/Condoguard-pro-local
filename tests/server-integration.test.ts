@@ -344,4 +344,48 @@ describe('integração do backend local', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).session_is_valid).toBe(true);
   });
+
+  it('prestador/doméstico reconhecido entra no log de acesso como registro concluído', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_colab_1', name: 'Prestador Fixo', apartment: '801', person_type: 'prestador' } }),
+    });
+
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 1, user_id: 900, user_name: '801 - Prestador Fixo', portal_id: 1, device_id: 'cid-dec-1' }),
+    });
+    expect((await res.json()).event).toBe(7);
+
+    const rows = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_colab_1' }])));
+    expect(rows.error).toBeNull();
+    expect(rows.data).toHaveLength(1);
+    const entry = rows.data[0];
+    expect(entry.visitor_type).toBe('service_provider');
+    expect(entry.visitor_name).toBe('Prestador Fixo');
+    expect(entry.apartment).toBe('801');
+    expect(entry.entry_time).toBeTruthy();
+    expect(entry.exit_time).toBe(entry.entry_time);
+    expect(entry.auto_recognized).toBe(true);
+  });
+
+  it('morador reconhecido NÃO gera registro no log de acesso', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_morador_1', name: 'Morador Sem Log', apartment: '802', person_type: 'morador' } }),
+    });
+
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 1, user_id: 901, user_name: '802 - Morador Sem Log', portal_id: 1, device_id: 'cid-dec-1' }),
+    });
+    expect((await res.json()).event).toBe(7);
+
+    const rows = await api('/api/table/access_entries?select=id&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_morador_1' }])));
+    expect(rows.error).toBeNull();
+    expect(rows.data).toHaveLength(0);
+  });
 });
+

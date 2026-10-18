@@ -5,6 +5,7 @@
 // com a ordem de abertura; o trabalho de banco roda em background.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const corsHeaders = {
@@ -72,15 +73,47 @@ function runBackground(label, task) {
 }
 
 // Detecta o host para configurar o dispositivo apontar para ESTE servidor local.
+// IMPORTANTE: o Tauri/WebView serve a interface em 127.0.0.1, então o Host do
+// pedido NÃO é o endereço que o aparelho (outro IP da LAN) pode alcançar.
+// Nesses casos resolvemos o IP real da LAN; sem isso o dispositivo passa a
+// apontar para ele mesmo e o canal de push/mortor morre.
+function isLoopback(host) {
+  return host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./.test(host);
+}
+
+function lanAddress() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal && iface.address) return iface.address;
+    }
+  }
+  return null;
+}
+
 function parseHost(req) {
   const hostHeader = (req.headers.host || '127.0.0.1:8080').replace(/[^a-zA-Z0-9.:\-\[\]]/g, '');
+  let host;
+  let port;
   const bracketMatch = hostHeader.match(/^\[([^\]]+)\](?::(\d+))?$/);
-  if (bracketMatch) return { host: bracketMatch[1], port: bracketMatch[2] || '80' };
-  const idx = hostHeader.lastIndexOf(':');
-  if (idx > -1 && /^\d+$/.test(hostHeader.slice(idx + 1))) {
-    return { host: hostHeader.slice(0, idx), port: hostHeader.slice(idx + 1) };
+  if (bracketMatch) {
+    host = bracketMatch[1];
+    port = bracketMatch[2] || '80';
+  } else {
+    const idx = hostHeader.lastIndexOf(':');
+    if (idx > -1 && /^\d+$/.test(hostHeader.slice(idx + 1))) {
+      host = hostHeader.slice(0, idx);
+      port = hostHeader.slice(idx + 1);
+    } else {
+      host = hostHeader;
+      port = '80';
+    }
   }
-  return { host: hostHeader, port: '80' };
+  if (isLoopback(host)) {
+    const resolved = process.env.PORTALGUARD_SERVER_HOST || lanAddress();
+    if (resolved) host = resolved;
+  }
+  return { host, port };
 }
 
 export function buildWebhookConfig(req) {
@@ -237,10 +270,13 @@ const evaluateCentralAccess = async (db, payload) => {
           'SELECT id, name, apartment, contract_type, contract_end_date, person_type FROM residents WHERE apartment LIKE ?'
         ).all(`%${apt.trim()}%`);
         const target = normalizeName(n);
+        // Só autoriza quando o NOME realmente corresponde. Não usar mais o
+        // atalho "rows.length === 1" — ele abria para o morador errado quando
+        // o nome do evento não batia com ninguém do apartamento.
         resident = rows.find((r) => {
           const rn = normalizeName(r.name);
           return rn.includes(target) || target.includes(rn);
-        }) || (rows.length === 1 ? rows[0] : null);
+        }) || null;
       }
     }
 
@@ -255,6 +291,8 @@ const evaluateCentralAccess = async (db, payload) => {
         resident_name: resident.name,
         resident_id: resident.id,
         resolved_user_id: resident.id,
+        person_type: resident.person_type || 'morador',
+        apartment: resident.apartment || null,
       };
       if (resident.contract_end_date) {
         const today = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10); // America/Sao_Paulo
@@ -369,8 +407,28 @@ const extractPhotoBase64 = (payload) => {
 
 const extractUserName = (values) => sanitizeString(values.user_name || values.name || values.userName || values.user || '', 200);
 
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); }),
+  ]);
+}
+
 export function registerControlidWebhook(app, ctx) {
-  const { db, now, genId, notifyRealtime, PHOTOS_DIR } = ctx;
+  const { db, now, genId, notifyRealtime, PHOTOS_DIR, faceEngine = null } = ctx;
+  const FACE_TIMEOUT_MS = Number(process.env.PORTALGUARD_FACE_TIMEOUT_MS || 6000);
+
+  // Descobre o endereço (ip:porta) do leitor para puxar o frame da câmera.
+  function resolveDeviceAddress(deviceId) {
+    if (!deviceId) return null;
+    try {
+      const row = db.prepare('SELECT ip_address FROM devices WHERE serial_number = ? OR ip_address = ? LIMIT 1').get(deviceId, deviceId);
+      return row?.ip_address || null;
+    } catch {
+      return null;
+    }
+  }
 
   // Captura o corpo bruto ANTES do express.json consumir o stream.
   app.use('/api/controlid-webhook', (req, res, next) => {
@@ -395,7 +453,65 @@ export function registerControlidWebhook(app, ctx) {
       .run(id, deviceId || 'unknown', eventType, JSON.stringify(payload), processed ? 1 : 0, now());
     const row = db.prepare('SELECT * FROM controlid_logs WHERE id = ?').get(id);
     notifyRealtime('controlid_logs', 'INSERT', { ...row, payload, processed: !!row.processed });
+    if (VISUALIZATION_LOG_TYPES.includes(eventType)) trimVisualizationLogs();
     return id;
+  }
+
+  // Prestador de servico fixo / empregado domestico reconhecido pelo leitor:
+  // grava a passagem no log de acesso (access_entries) como registro CONCLUIDO
+  // (entry_time = exit_time) para constar nos "Logs de Acesso" e relatorios,
+  // sem ficar em "Ativos no Condominio". Moradores nao geram registro.
+  function recordCollaboratorAccess(residentId) {
+    try {
+      if (!residentId) return;
+      const resident = db.prepare('SELECT id, name, apartment, person_type FROM residents WHERE id = ?').get(residentId);
+      if (!resident) return;
+      const personType = String(resident.person_type || 'morador');
+      if (personType === 'morador') return;
+
+      const ts = now();
+      const name = resident.name || '';
+      const id = genId();
+      db.prepare(`INSERT INTO access_entries (
+        id, apartment, auto_recognized, badge_number, company, entry_time, exit_time,
+        notes, photo_url, purpose, registered_by, resident_id, resident_name,
+        vehicle_color, vehicle_model, vehicle_plate, visitor_document, visitor_name, visitor_type
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        id, resident.apartment || '', 1, null, null, ts, ts,
+        null, null, 'Acesso automatico (leitor)', null, resident.id, name,
+        null, null, null, '', name, 'service_provider'
+      );
+      const inserted = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(id);
+      notifyRealtime('access_entries', 'INSERT', { ...inserted, auto_recognized: !!inserted.auto_recognized });
+    } catch (e) {
+      console.error('recordCollaboratorAccess error:', e);
+    }
+  }
+
+  // A portaria só precisa ver os acessos recentes na tela. Mantemos apenas os
+  // últimos N eventos de visualização e apagamos os mais antigos automaticamente
+  // (as fotos não são mais armazenadas). Outros tipos (push_result etc.) ficam
+  // intactos por serem operacionais.
+  const VISUALIZATION_LOG_TYPES = ['dao', 'access_photo', 'identification_event', 'catra_event'];
+  const MAX_VISUALIZATION_LOGS = Number(process.env.PORTALGUARD_MAX_LOGS || 30);
+
+  function trimVisualizationLogs(max = MAX_VISUALIZATION_LOGS) {
+    try {
+      const placeholders = VISUALIZATION_LOG_TYPES.map(() => '?').join(',');
+      const stale = db.prepare(
+        `SELECT id FROM controlid_logs WHERE event_type IN (${placeholders}) AND id NOT IN (
+           SELECT id FROM controlid_logs WHERE event_type IN (${placeholders}) ORDER BY received_at DESC, rowid DESC LIMIT ?
+         )`
+      ).all(...VISUALIZATION_LOG_TYPES, ...VISUALIZATION_LOG_TYPES, max);
+      if (!stale.length) return;
+      const del = db.prepare('DELETE FROM controlid_logs WHERE id = ?');
+      for (const { id } of stale) {
+        del.run(id);
+        notifyRealtime('controlid_logs', 'DELETE', null, { id });
+      }
+    } catch (e) {
+      console.error('Error trimming controlid_logs:', e);
+    }
   }
 
   function insertPushCommand(deviceId, command) {
@@ -611,26 +727,7 @@ export function registerControlidWebhook(app, ctx) {
             } else {
               console.log('Push result (via /push POST) from device:', deviceId, JSON.stringify(payload).substring(0, 300));
 
-              const cmd = parseStoredCommand(executingCmd.command);
-              const isImageResult = cmd?.endpoint === 'user_get_image' || cmd?.endpoint === 'user_get_image.fcgi';
-              let photoPath = null;
-
-              if (isImageResult) {
-                const imageBase64 = extractPhotoBase64(payload);
-                if (imageBase64) {
-                  photoPath = saveAccessPhoto(deviceId, imageBase64);
-                  if (photoPath && cmd?.meta?.log_id) {
-                    const origLog = db.prepare('SELECT payload FROM controlid_logs WHERE id = ?').get(cmd.meta.log_id);
-                    if (origLog) {
-                      const parsed = typeof origLog.payload === 'string' ? JSON.parse(origLog.payload) : origLog.payload;
-                      db.prepare('UPDATE controlid_logs SET payload = ? WHERE id = ?')
-                        .run(JSON.stringify({ ...parsed, saved_photo_path: photoPath }), cmd.meta.log_id);
-                      console.log('Photo linked to identification log:', cmd.meta.log_id, photoPath);
-                    }
-                  }
-                }
-              }
-
+              // Não salvamos as imagens recebidas do dispositivo (sem captura de fotos).
               runBackground('storePushResultViaPush', (async () => {
                 db.prepare("UPDATE push_command_queue SET status = 'done', executed_at = ?, result = ? WHERE id = ?")
                   .run(new Date().toISOString(), JSON.stringify(payload), executingCmd.id);
@@ -717,26 +814,7 @@ export function registerControlidWebhook(app, ctx) {
           : null;
 
         if (executingCmd) {
-          const cmd = parseStoredCommand(executingCmd.command);
-          const isImageResult = cmd?.endpoint === 'user_get_image' || cmd?.endpoint === 'user_get_image.fcgi';
-          let photoPath = null;
-
-          if (isImageResult) {
-            const imageBase64 = extractPhotoBase64(payload);
-            if (imageBase64) {
-              photoPath = saveAccessPhoto(deviceId, imageBase64);
-              if (photoPath && cmd?.meta?.log_id) {
-                const origLog = db.prepare('SELECT payload FROM controlid_logs WHERE id = ?').get(cmd.meta.log_id);
-                if (origLog) {
-                  const parsed = typeof origLog.payload === 'string' ? JSON.parse(origLog.payload) : origLog.payload;
-                  db.prepare('UPDATE controlid_logs SET payload = ? WHERE id = ?')
-                    .run(JSON.stringify({ ...parsed, saved_photo_path: photoPath }), cmd.meta.log_id);
-                  console.log('Photo linked to identification log:', cmd.meta.log_id, photoPath);
-                }
-              }
-            }
-          }
-
+          // Não salvamos as imagens recebidas do dispositivo (sem captura de fotos).
           runBackground('storePushResult', (async () => {
             db.prepare("UPDATE push_command_queue SET status = 'done', executed_at = ?, result = ? WHERE id = ?")
               .run(new Date().toISOString(), JSON.stringify(payload), executingCmd.id);
@@ -888,15 +966,66 @@ export function registerControlidWebhook(app, ctx) {
           Promise.resolve(resolveDeviceType(effectiveDeviceId)),
           evaluateCentralAccess(db, payload),
         ]);
-        // A decisão do banco é autoritativa. Se o motor central não respondeu a
-        // tempo (fallback/timeout), respeitamos a decisão do próprio equipamento
-        // (event 7 = identificou localmente) para o portão nunca abrir às cegas.
+
+        // ===== IDENTIFICAÇÃO CENTRALIZADA POR ROSTO =====
+        // Quando o equipamento detecta um rosto mas não identifica a pessoa
+        // (event sem TAG e sem nome), o PortalGuard puxa o frame da câmera do
+        // leitor e casa o rosto contra as fotos dos moradores. A decisão do
+        // banco continua sendo a juíza; o rosto só ENTRA quando não há nada.
+        const rawCard = String(payload?.card_value ?? '');
+        const hasCard = rawCard.replace(/^0+/, '') !== '';
+        const deviceUserId = Number.parseInt(String(payload?.user_id ?? '0'), 10) || 0;
+        const deviceEvent = Number.parseInt(String(payload?.event ?? '0'), 10) || 0;
+        // O equipamento NUNCA identificou positivamente (user_id sempre 0 nos
+        // eventos reais). Só pulamos o rosto quando há TAG ou quando o próprio
+        // equipamento concedeu (event 7). Um nome vindo do equipamento sem
+        // user_id não conta como identificação confiável.
+        const devicePositivelyIdentified = deviceUserId > 0 || deviceEvent === 7;
+        const unidentified = !hasCard && !devicePositivelyIdentified;
+        let finalDecision = decision;
+        let faceResult = null;
+
+        if (faceEngine && unidentified && !decision.allow && decision.source === 'db') {
+          const deviceAddress = resolveDeviceAddress(effectiveDeviceId);
+          if (deviceAddress) {
+            try {
+              faceResult = await withTimeout(
+                faceEngine.identifyFromDevice(deviceAddress, faceEngine.defaultThreshold),
+                FACE_TIMEOUT_MS,
+                { matched: false, reason: 'timeout' },
+              );
+            } catch (e) {
+              faceResult = { matched: false, reason: `erro:${e.message}` };
+            }
+            console.log('Face identification:', { device_id: effectiveDeviceId, address: deviceAddress, ...faceResult });
+            if (faceResult?.matched) {
+              finalDecision = {
+                allow: true,
+                source: 'face',
+                reason: `Rosto reconhecido: ${faceResult.name}`,
+                resident: faceResult.name,
+                resident_name: faceResult.name,
+                resident_id: faceResult.residentId,
+                resolved_user_id: faceResult.residentId,
+                face_distance: faceResult.distance,
+              };
+            }
+          } else {
+            console.warn('Face identification: endereço do dispositivo não encontrado', effectiveDeviceId);
+          }
+        }
+
+        // A decisão do banco (ou do rosto) é autoritativa. Se o motor central não
+        // respondeu a tempo (fallback/timeout), respeitamos a decisão do próprio
+        // equipamento (event 7 = identificou localmente) para o portão nunca abrir
+        // às cegas.
         const deviceGranted = Number.parseInt(String(payload?.event ?? '0'), 10) === 7;
-        const allowByDb = decision.source === 'db' ? decision.allow : deviceGranted;
+        const authoritative = finalDecision.source === 'db' || finalDecision.source === 'face';
+        const allowByDb = authoritative ? finalDecision.allow : deviceGranted;
         const identResponse = allowByDb
-          ? buildIdentificationResponse(payload, urlPath, deviceType, decision)
+          ? buildIdentificationResponse(payload, urlPath, deviceType, finalDecision)
           : buildDeniedResponse(payload, urlPath);
-        console.log('Central access decision:', { device_id: effectiveDeviceId, ...decision });
+        console.log('Central access decision:', { device_id: effectiveDeviceId, ...finalDecision });
         console.log('Identification response (immediate):', {
           device_id: effectiveDeviceId,
           device_type: deviceType,
@@ -908,15 +1037,25 @@ export function registerControlidWebhook(app, ctx) {
 
         runBackground('identificationPostProcess', (async () => {
           try {
-            let savedPhotoPath = null;
-            const photoBase64 = extractPhotoBase64(payload);
-            if (photoBase64) {
-              try { savedPhotoPath = saveAccessPhoto(effectiveDeviceId, photoBase64); }
-              catch (e) { console.error('Error saving access photo:', e); }
+            // Não armazenamos fotos: estes eventos servem apenas para a
+            // visualização da portaria (nome + horário). As fotos eram o que
+            // mais ocupava espaço em disco.
+            const extra = {};
+            if (faceResult) {
+              extra.face_identification = {
+                matched: !!faceResult.matched,
+                reason: faceResult.reason || null,
+                distance: faceResult.distance ?? null,
+                resident_id: faceResult.residentId || null,
+                resident_name: (finalDecision?.source === 'face' && finalDecision.resident_name) || faceResult.name || null,
+              };
             }
+            const enrichedPayload = Object.keys(extra).length ? { ...payload, ...extra } : payload;
+            insertControlidLog(effectiveDeviceId, eventType, enrichedPayload, false);
 
-            const enrichedPayload = savedPhotoPath ? { ...payload, saved_photo_path: savedPhotoPath } : payload;
-            const logEntryId = insertControlidLog(effectiveDeviceId, eventType, enrichedPayload, false);
+            // Prestador de servico fixo / empregado domestico: registra a
+            // passagem no log de acesso (nao em "Ativos no Condominio").
+            if (allowByDb) recordCollaboratorAccess(finalDecision?.resident_id);
 
             // Auto-sync de vehicle_tag
             const cardValue = String(payload.card_value || '');
@@ -952,36 +1091,7 @@ export function registerControlidWebhook(app, ctx) {
               }
             }
 
-            // Enfileira user_get_image se o dispositivo disser que há foto
-            const userId = Number.parseInt(String(payload?.user_id ?? '0'), 10);
-            const hasImage = payload?.user_has_image === 1 || payload?.user_has_image === '1'
-              || payload?.user_has_image === true || payload?.user_has_image === 'true';
-
-            if (hasImage && Number.isFinite(userId) && userId > 0 && !savedPhotoPath) {
-              const queuedImageCommands = db.prepare("SELECT id, command, status FROM push_command_queue WHERE device_id = ? AND status IN ('pending','executing') ORDER BY created_at DESC LIMIT 10").all(effectiveDeviceId);
-
-              const alreadyQueued = (queuedImageCommands || []).some((row) => {
-                const command = parseStoredCommand(row.command);
-                const endpoint = String(command?.endpoint || '').replace(/\.fcgi$/i, '');
-                const queuedUserId = Number.parseInt(String(command?.body?.user_id ?? '0'), 10);
-                return endpoint === 'user_get_image' && queuedUserId === userId;
-              });
-
-              if (!alreadyQueued) {
-                try {
-                  insertPushCommand(effectiveDeviceId, {
-                    verb: 'POST',
-                    endpoint: 'user_get_image',
-                    body: { user_id: userId, technology: 'visible_light' },
-                    contentType: 'application/json',
-                    meta: { log_id: logEntryId, user_id: userId },
-                  });
-                  console.log(`Queued user_get_image for user ${userId} on device ${effectiveDeviceId}, log_id: ${logEntryId}`);
-                } catch (e) {
-                  console.error('Failed to queue user_get_image:', e);
-                }
-              }
-            }
+            // Não enfileiramos mais user_get_image: a portaria não guarda fotos.
           } catch (e) {
             console.error('Error in identification post-processing:', e);
           }
@@ -992,17 +1102,9 @@ export function registerControlidWebhook(app, ctx) {
       }
 
       // ===== Eventos NÃO relacionados a identificação =====
-      let savedPhotoPath = null;
-      const photoBase64 = extractPhotoBase64(payload);
-      if (photoBase64) {
-        try { savedPhotoPath = saveAccessPhoto(effectiveDeviceId, photoBase64); }
-        catch (e) { console.error('Error saving access photo:', e); }
-      }
-
-      const enrichedPayload = savedPhotoPath ? { ...payload, saved_photo_path: savedPhotoPath } : payload;
-
+      // Sem captura de fotos: a portaria só precisa do nome/horário na tela.
       try {
-        insertControlidLog(effectiveDeviceId, eventType, enrichedPayload, false);
+        insertControlidLog(effectiveDeviceId, eventType, payload, false);
       } catch (e) {
         console.error('Error saving Control iD log:', e);
       }
@@ -1016,7 +1118,7 @@ export function registerControlidWebhook(app, ctx) {
         return;
       }
 
-      res.set(corsHeaders).status(200).json({ success: true, event_type: eventType, photo_saved: !!savedPhotoPath });
+      res.set(corsHeaders).status(200).json({ success: true, event_type: eventType, photo_saved: false });
     } catch (error) {
       console.error('Error processing Control iD webhook:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

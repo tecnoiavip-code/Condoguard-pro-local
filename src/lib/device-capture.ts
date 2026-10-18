@@ -298,6 +298,23 @@ export async function capturePhotoFromDevice(
 }
 
 /**
+ * Fetch a single live frame from a facial device camera.
+ * Uses the same mechanism as the centralized face identification
+ * (save_screenshot on the reader), so the operator can preview the camera and
+ * capture the photo without touching the device.
+ */
+export async function fetchDeviceFrame(device: Device): Promise<string | null> {
+  const deviceId = getDeviceSerial(device) || device.id;
+  const { data, error } = await supabase.functions.invoke('device-frame', {
+    method: 'POST',
+    body: { device_id: deviceId },
+  });
+  if (error) throw new Error(error.message || 'Falha ao obter imagem do dispositivo.');
+  const image = data?.image || data?.data?.image;
+  return (image as string) || null;
+}
+
+/**
  * Read vehicle tags from a Control iD device via push queue.
  */
 export async function syncTagsFromDevice(

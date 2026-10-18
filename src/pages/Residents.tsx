@@ -8,14 +8,14 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Pencil, Trash2, Save, X, Plus, Search, Download, FileSpreadsheet, ScanFace, Loader2, Tag, Wifi, WifiOff, ImageDown } from 'lucide-react';
-import { DeviceCaptureStatus } from '@/components/DeviceCaptureStatus';
+import { DeviceFaceCapture } from '@/components/DeviceFaceCapture';
 import { Badge } from '@/components/ui/badge';
 import { Resident, Device } from '@/types';
 import { formatCPF, formatPhone, formatPlate, isValidCPF, isValidPhone, isValidPlate } from '@/lib/utils';
 import { useResidents } from '@/hooks/useResidents';
 import { useDevices } from '@/hooks/useDevices';
 import { toast } from 'sonner';
-import { capturePhotoFromDevice, syncTagsFromDevice, syncPhotosFromDevices, syncBiometricToAllDevices, syncTagToAllDevices, removeUserFromAllDevices } from '@/lib/device-capture';
+import { syncTagsFromDevice, syncPhotosFromDevices, syncBiometricToAllDevices, syncTagToAllDevices, removeUserFromAllDevices } from '@/lib/device-capture';
 import StandardPagination from '@/components/StandardPagination';
 import {
   Table,
@@ -67,12 +67,6 @@ export const Residents = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Device capture states
-  const [deviceCaptureLoading, setDeviceCaptureLoading] = useState(false);
-  const [deviceCaptureStatus, setDeviceCaptureStatus] = useState('');
-  const [deviceCaptureStep, setDeviceCaptureStep] = useState<import('@/lib/device-capture').CaptureStep | undefined>();
-  const [deviceCaptureProgress, setDeviceCaptureProgress] = useState(0);
-  const [captureAbortController, setCaptureAbortController] = useState<AbortController | null>(null);
-  const [selectedFacialDeviceId, setSelectedFacialDeviceId] = useState('');
   const [showDeviceCaptureDialog, setShowDeviceCaptureDialog] = useState(false);
 
   // Tag sync states
@@ -321,54 +315,6 @@ export const Residents = () => {
     }
   };
 
-  const handleDeviceCapture = async () => {
-    const device = devices.find(d => d.id === selectedFacialDeviceId);
-    if (!device) {
-      toast.error('Selecione um dispositivo facial.');
-      return;
-    }
-
-    const abortCtrl = new AbortController();
-    setCaptureAbortController(abortCtrl);
-    setDeviceCaptureLoading(true);
-    setDeviceCaptureStatus('Iniciando...');
-    setDeviceCaptureStep('preparing');
-    setDeviceCaptureProgress(5);
-
-    try {
-      const personInfo = {
-        name: formData.name,
-        apartment: formData.apartment,
-        document: formData.cpf,
-        identifier: editingId || formData.cpf || formData.name,
-        registration: formData.cpf || undefined,
-      };
-      const photo = await capturePhotoFromDevice(device, (msg, step, progress) => {
-        setDeviceCaptureStatus(msg);
-        if (step) setDeviceCaptureStep(step);
-        if (progress !== undefined) setDeviceCaptureProgress(progress);
-      }, abortCtrl.signal, personInfo);
-      if (photo) {
-        setFormData(prev => ({ ...prev, photo }));
-        setShowDeviceCaptureDialog(false);
-        setDeviceCaptureStatus('');
-        setDeviceCaptureStep(undefined);
-        setDeviceCaptureProgress(0);
-        toast.success('Foto capturada pelo dispositivo!');
-      }
-    } catch (err: any) {
-      if (err.name === 'AbortError') return;
-      const isNetworkError = err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError');
-      toast.error(isNetworkError
-        ? 'Não foi possível conectar ao dispositivo. Verifique se está na mesma rede.'
-        : `Erro: ${err.message}`
-      );
-    } finally {
-      setDeviceCaptureLoading(false);
-      setCaptureAbortController(null);
-    }
-  };
-
   const handleSyncTags = async () => {
     const device = devices.find(d => d.id === selectedTagDeviceId);
     if (!device) {
@@ -480,11 +426,6 @@ export const Residents = () => {
     setIsDialogOpen(false);
     setShowDeviceCaptureDialog(false);
     setShowTagSyncDialog(false);
-    setDeviceCaptureStatus('');
-    setDeviceCaptureStep(undefined);
-    setDeviceCaptureProgress(0);
-    captureAbortController?.abort();
-    setCaptureAbortController(null);
     setDeviceTags([]);
   };
 
@@ -1116,48 +1057,15 @@ export const Residents = () => {
               Captura Facial pelo Dispositivo
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Dispositivo Facial</Label>
-              <Select value={selectedFacialDeviceId} onValueChange={setSelectedFacialDeviceId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o dispositivo..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {facialDevices.map(d => (
-                    <SelectItem key={d.id} value={d.id}>
-                      <div className="flex items-center gap-2">
-                        {d.status === 'online' ? <Wifi className="h-3 w-3 text-green-500" /> : <WifiOff className="h-3 w-3 text-destructive" />}
-                        {d.name} - {d.location}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <DeviceCaptureStatus
-              status={deviceCaptureStatus}
-              step={deviceCaptureStep}
-              progress={deviceCaptureProgress}
-              loading={deviceCaptureLoading}
-              onCancel={() => captureAbortController?.abort()}
-            />
-
-            <div className="flex gap-2">
-              <Button
-                onClick={handleDeviceCapture}
-                disabled={!selectedFacialDeviceId || deviceCaptureLoading}
-                className="flex-1 gap-2"
-              >
-                {deviceCaptureLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanFace className="h-4 w-4" />}
-                Capturar Foto
-              </Button>
-              <Button variant="secondary" onClick={() => setShowDeviceCaptureDialog(false)}>
-                Cancelar
-              </Button>
-            </div>
-          </div>
+          <DeviceFaceCapture
+            devices={facialDevices}
+            onCaptured={(photo) => {
+              setFormData(prev => ({ ...prev, photo }));
+              setShowDeviceCaptureDialog(false);
+              toast.success('Foto capturada pelo dispositivo!');
+            }}
+            onCancel={() => setShowDeviceCaptureDialog(false)}
+          />
         </DialogContent>
       </Dialog>
 

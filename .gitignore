@@ -13,6 +13,9 @@ dist
 dist-ssr
 server-dist
 
+# Assets do motor facial gerados por scripts/gen-face-assets.mjs
+server/face-assets.data.mjs
+
 # Tauri (build artifacts)
 src-tauri/target/
 src-tauri/gen/

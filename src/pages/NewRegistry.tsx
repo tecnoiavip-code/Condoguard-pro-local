@@ -6,8 +6,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { LogIn, LogOut, Camera, Upload, X, Plus, Pencil, Trash2, Search, Download, ShieldBan, ShieldCheck, Ban, AlertTriangle, FileSpreadsheet, ScanFace, Loader2, Wifi, WifiOff, ChevronDown, QrCode } from 'lucide-react';
-import { DeviceCaptureStatus } from '@/components/DeviceCaptureStatus';
+import { LogIn, LogOut, Camera, Upload, X, Plus, Pencil, Trash2, Search, Download, ShieldBan, ShieldCheck, Ban, AlertTriangle, FileSpreadsheet, ScanFace, ChevronDown, QrCode } from 'lucide-react';
+import { DeviceFaceCapture } from '@/components/DeviceFaceCapture';
 import GuestPassScanner from '@/components/GuestPassScanner';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AccessEntry, Resident, Device } from '@/types';
@@ -16,7 +16,7 @@ import { useAccessEntries } from '@/hooks/useAccessEntries';
 import { useResidents } from '@/hooks/useResidents';
 import { useDevices } from '@/hooks/useDevices';
 import { toast } from 'sonner';
-import { capturePhotoFromDevice, syncBiometricToAllDevices } from '@/lib/device-capture';
+import { syncBiometricToAllDevices } from '@/lib/device-capture';
 import StandardPagination from '@/components/StandardPagination';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from '@/components/ui/badge';
@@ -97,13 +97,6 @@ export const NewRegistry = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Device capture states
-  const [deviceCaptureLoading, setDeviceCaptureLoading] = useState(false);
-  const [deviceCaptureStatus, setDeviceCaptureStatus] = useState('');
-  const [deviceCaptureStep, setDeviceCaptureStep] = useState<import('@/lib/device-capture').CaptureStep | undefined>();
-  const [deviceCaptureProgress, setDeviceCaptureProgress] = useState(0);
-  const [captureAbortController, setCaptureAbortController] = useState<AbortController | null>(null);
-  const [selectedFacialDeviceId, setSelectedFacialDeviceId] = useState('');
   const [showDeviceFacialDialog, setShowDeviceFacialDialog] = useState(false);
   const facialDevices = devices.filter(d => d.type === 'facial_recognition');
 
@@ -232,7 +225,7 @@ export const NewRegistry = () => {
   const filteredAllEntries = allEntries.filter(entry => entry.visitorName.toLowerCase().includes(searchTerm.toLowerCase()) || entry.apartment.toLowerCase().includes(searchTerm.toLowerCase()) || entry.visitorDocument.toLowerCase().includes(searchTerm.toLowerCase()));
   const totalPagesAll = Math.ceil(filteredAllEntries.length / itemsPerPageTable);
   const paginatedAllEntries = filteredAllEntries.slice((currentPageAll - 1) * itemsPerPageTable, currentPageAll * itemsPerPageTable);
-  const filteredResidents = residents.filter(r => r.name.toLowerCase().includes(visitedLocationSearch.toLowerCase()) || r.apartment.toLowerCase().includes(visitedLocationSearch.toLowerCase()));
+  const filteredResidents = residents.filter(r => (r.personType ?? 'morador') === 'morador').filter(r => r.name.toLowerCase().includes(visitedLocationSearch.toLowerCase()) || r.apartment.toLowerCase().includes(visitedLocationSearch.toLowerCase()));
   
   const handleVisitedLocationSelect = (residentId: string, residentName: string, apartment: string) => {
     setVisitedLocationSearch(`${residentName} - ${apartment}`);
@@ -334,50 +327,6 @@ export const NewRegistry = () => {
         toast.success('Foto carregada com sucesso!');
       };
       reader.readAsDataURL(file);
-    }
-  };
-
-  const handleDeviceCapture = async () => {
-    const device = devices.find(d => d.id === selectedFacialDeviceId);
-    if (!device) {
-      toast.error('Selecione um dispositivo facial.');
-      return;
-    }
-    const abortCtrl = new AbortController();
-    setCaptureAbortController(abortCtrl);
-    setDeviceCaptureLoading(true);
-    setDeviceCaptureStatus('Iniciando...');
-    setDeviceCaptureStep('preparing');
-    setDeviceCaptureProgress(5);
-    try {
-      const resident = residents.find(r => r.id === formData.residentId);
-      const personInfo = formData.visitorName && formData.visitorDocument ? {
-        name: formData.visitorName,
-        apartment: resident?.apartment,
-        document: formData.visitorDocument,
-        identifier: `sp-${formData.visitorDocument}`,
-        registration: formData.visitorDocument,
-      } : undefined;
-      const photo = await capturePhotoFromDevice(device, (msg, step, progress) => {
-        setDeviceCaptureStatus(msg);
-        if (step) setDeviceCaptureStep(step);
-        if (progress !== undefined) setDeviceCaptureProgress(progress);
-      }, abortCtrl.signal, personInfo);
-      if (photo) {
-        setFormData(prev => ({ ...prev, photo }));
-        setShowDeviceFacialDialog(false);
-        setDeviceCaptureStatus('');
-        setDeviceCaptureStep(undefined);
-        setDeviceCaptureProgress(0);
-        toast.success('Foto capturada pelo dispositivo!');
-      }
-    } catch (err: any) {
-      if (err.name === 'AbortError') return;
-      const isNetworkError = err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError');
-      toast.error(isNetworkError ? 'Não foi possível conectar ao dispositivo.' : `Erro: ${err.message}`);
-    } finally {
-      setDeviceCaptureLoading(false);
-      setCaptureAbortController(null);
     }
   };
 
@@ -1277,48 +1226,15 @@ export const NewRegistry = () => {
               Captura Facial pelo Dispositivo
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Dispositivo Facial</Label>
-              <Select value={selectedFacialDeviceId} onValueChange={setSelectedFacialDeviceId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o dispositivo..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {facialDevices.map(d => (
-                    <SelectItem key={d.id} value={d.id}>
-                      <div className="flex items-center gap-2">
-                        {d.status === 'online' ? <Wifi className="h-3 w-3 text-green-500" /> : <WifiOff className="h-3 w-3 text-destructive" />}
-                        {d.name} - {d.location}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <DeviceCaptureStatus
-              status={deviceCaptureStatus}
-              step={deviceCaptureStep}
-              progress={deviceCaptureProgress}
-              loading={deviceCaptureLoading}
-              onCancel={() => captureAbortController?.abort()}
-            />
-
-            <div className="flex gap-2">
-              <Button
-                onClick={handleDeviceCapture}
-                disabled={!selectedFacialDeviceId || deviceCaptureLoading}
-                className="flex-1 gap-2"
-              >
-                {deviceCaptureLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanFace className="h-4 w-4" />}
-                Capturar Foto
-              </Button>
-              <Button variant="secondary" onClick={() => setShowDeviceFacialDialog(false)}>
-                Cancelar
-              </Button>
-            </div>
-          </div>
+          <DeviceFaceCapture
+            devices={facialDevices}
+            onCaptured={(photo) => {
+              setFormData(prev => ({ ...prev, photo }));
+              setShowDeviceFacialDialog(false);
+              toast.success('Foto capturada pelo dispositivo!');
+            }}
+            onCancel={() => setShowDeviceFacialDialog(false)}
+          />
         </DialogContent>
       </Dialog>
 

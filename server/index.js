@@ -12,6 +12,7 @@ import {
   seedAdmin, parseSeedFile, DATA_DIR, PHOTOS_DIR,
 } from './db.js';
 import { registerControlidWebhook, buildWebhookConfig } from './controlid-webhook.js';
+import { createFaceEngine, getDeviceFrame } from './face-match.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,10 +23,20 @@ console.log(`[portalguard-local] Admin: ${admin.email}`);
 
 const app = express();
 
+// Motor de reconhecimento facial centralizado (PortalGuard identifica pelo
+// frame da câmera do leitor quando o próprio equipamento não identifica).
+const FACE_ENABLED = process.env.PORTALGUARD_FACE_ENABLED !== '0' && process.env.PORTALGUARD_FACE_ENABLED !== 'false';
+const faceEngine = FACE_ENABLED ? createFaceEngine({ db, photosDir: PHOTOS_DIR, logger: console }) : null;
+if (faceEngine) {
+  faceEngine.initAndIndex().catch((e) => console.error('[face] init falhou:', e.message));
+} else {
+  console.log('[portalguard-local] Motor facial desabilitado (PORTALGUARD_FACE_ENABLED=0)');
+}
+
 // O webhook do Control iD precisa do corpo BRUTO (JSON ou form-encoded) e roda
 // sem autenticação (o dispositivo não conhece o token). Registrado antes do
 // express.json para capturar o stream.
-registerControlidWebhook(app, { db, now, genId, notifyRealtime, PHOTOS_DIR });
+registerControlidWebhook(app, { db, now, genId, notifyRealtime, PHOTOS_DIR, faceEngine });
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -440,6 +451,7 @@ function fillDefaults(table, row) {
   if (cols.has('created_at') && !out.created_at) out.created_at = now();
   if (cols.has('updated_at') && !out.updated_at) out.updated_at = now();
   if (table === 'access_entries' && !out.entry_time) out.entry_time = now();
+  if (table === 'mails' && !out.received_at) out.received_at = now();
   return out;
 }
 
@@ -732,6 +744,9 @@ app.post('/api/storage/upload', authMiddleware, (req, res) => {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const base64 = String(data).replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
   fs.writeFileSync(target, Buffer.from(base64, 'base64'));
+  if (bucket === 'resident-photos' && faceEngine) {
+    faceEngine.refreshIndex().catch(() => {});
+  }
   res.json({ data: { path: safePath }, error: null });
 });
 
@@ -796,10 +811,24 @@ app.post('/api/functions/controlid-webhook/push-config', authMiddleware, (req, r
   res.json({ data: { ok: true, message: 'Configuration queued for push. Device will receive it on next poll.' }, error: null });
 });
 
-app.post('/api/functions/:name', authMiddleware, (req, res) => {
+app.post('/api/functions/:name', authMiddleware, async (req, res) => {
   const { name } = req.params;
   const body = req.body || {};
   try {
+    // Frame ao vivo da câmera do leitor facial, para o cadastro capturar a
+    // foto direto do dispositivo (mesmo mecanismo da identificação central).
+    if (name === 'device-frame') {
+      const deviceId = body.device_id || body.deviceId;
+      if (!deviceId) return res.status(400).json({ data: null, error: { message: 'device_id é obrigatório' } });
+      const row = db.prepare('SELECT ip_address FROM devices WHERE id = ? OR serial_number = ? OR ip_address = ? LIMIT 1')
+        .get(deviceId, deviceId, deviceId);
+      const address = row?.ip_address;
+      if (!address) return res.status(404).json({ data: null, error: { message: 'Dispositivo não encontrado ou sem IP cadastrado.' } });
+      const frame = await getDeviceFrame(address);
+      if (!frame) return res.status(502).json({ data: null, error: { message: 'O dispositivo não retornou imagem. Verifique se está online.' } });
+      return res.json({ data: { image: `data:image/jpeg;base64,${frame.toString('base64')}` }, error: null });
+    }
+
     if (name === 'send-push-notification') {
       const { action } = body;
       if (action === 'get-vapid-key') {

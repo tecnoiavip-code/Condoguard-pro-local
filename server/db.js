@@ -327,6 +327,14 @@ CREATE TABLE IF NOT EXISTS vapid_keys (
   private_key TEXT NOT NULL,
   public_key TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS resident_face_descriptors (
+  resident_id TEXT PRIMARY KEY,
+  descriptor TEXT NOT NULL,
+  photo_path TEXT,
+  photo_mtime TEXT,
+  updated_at TEXT NOT NULL
+);
 `;
 
 db.exec(SCHEMA);
