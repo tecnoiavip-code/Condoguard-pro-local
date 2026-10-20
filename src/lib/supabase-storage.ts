@@ -67,12 +67,19 @@ export const supabaseStorage = {
     // First check if there's a photo in Storage
     const { data: storageFiles } = await supabase.storage
       .from('resident-photos')
-      .list(id, { limit: 1 });
+      .list(id);
 
     if (storageFiles && storageFiles.length > 0) {
+      // Sempre pegar o arquivo mais recente (evita voltar foto antiga quando
+      // sobraram arquivos de uploads anteriores).
+      const newest = [...storageFiles].sort((a: any, b: any) => {
+        const aTime = String(a.updated_at || a.created_at || '');
+        const bTime = String(b.updated_at || b.created_at || '');
+        return bTime.localeCompare(aTime);
+      })[0];
       const { data: signedUrl } = await supabase.storage
         .from('resident-photos')
-        .createSignedUrl(`${id}/${storageFiles[0].name}`, 3600);
+        .createSignedUrl(`${id}/${newest.name}`, 3600);
       return signedUrl?.signedUrl || '';
     }
 
@@ -113,8 +120,16 @@ export const supabaseStorage = {
       const ext = file.name.split('.').pop() || 'jpg';
       const path = `${residentId}/photo.${ext}`;
 
-      // Remove old photo if exists
-      await supabase.storage.from('resident-photos').remove([path]);
+      // Remove TODOS os arquivos antigos da pasta: se sobrar outro arquivo
+      // (ex.: foto.jpg antiga), a exibição pode voltar a foto antiga.
+      const { data: existing } = await supabase.storage
+        .from('resident-photos')
+        .list(residentId);
+      if (existing && existing.length > 0) {
+        await supabase.storage
+          .from('resident-photos')
+          .remove(existing.map((f: any) => `${residentId}/${f.name}`));
+      }
 
       const { error } = await supabase.storage
         .from('resident-photos')
@@ -160,7 +175,7 @@ export const supabaseStorage = {
         const { data: signedUrl } = await supabase.storage
           .from('resident-photos')
           .createSignedUrl(`${path}/${files[0].name}`, 3600);
-        return signedUrl || '';
+        return signedUrl?.signedUrl || '';
       }
     } catch (err) {
       console.error('Error in getIncidentPhoto:', err);
@@ -318,11 +333,12 @@ export const supabaseStorage = {
 
     // Upload photo to Storage if provided
     if (resident.photo && resident.photo.startsWith('data:')) {
-      await supabaseStorage.uploadResidentPhoto(savedId, resident.photo);
+      const uploaded = await supabaseStorage.uploadResidentPhoto(savedId, resident.photo);
+      if (!uploaded) return null;
       // Clear base64 from DB column
       await supabase.from('residents').update({ photo_url: null }).eq('id', savedId);
-    } else if (!resident.photo) {
-      // Photo was removed
+    } else if (resident.photoRemoved) {
+      // Photo was explicitly removed by the user
       await supabaseStorage.deleteResidentPhoto(savedId);
       await supabase.from('residents').update({ photo_url: null }).eq('id', savedId);
     }

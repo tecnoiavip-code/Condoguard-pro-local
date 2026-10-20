@@ -769,7 +769,16 @@ app.get('/api/storage/list', authMiddleware, (req, res) => {
   const dir = path.join(base, String(listPath || ''));
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const data = entries.map(e => ({ name: e.name, id: `${String(listPath || '')}/${e.name}`.replace(/^\/+/, '') }));
+    const data = entries.filter(e => e.isFile()).map(e => {
+      let updatedAt = null;
+      try { updatedAt = fs.statSync(path.join(dir, e.name)).mtime.toISOString(); } catch { /* ignore */ }
+      return {
+        name: e.name,
+        id: `${String(listPath || '')}/${e.name}`.replace(/^\/+/, ''),
+        updated_at: updatedAt,
+        created_at: updatedAt,
+      };
+    });
     res.json({ data, error: null });
   } catch {
     res.json({ data: [], error: null });
@@ -782,6 +791,8 @@ app.get('/api/storage/file', (req, res) => {
   const safePath = String(filePath).replace(/\.\./g, '').replace(/^\/+/, '');
   const target = path.join(bucketDir(bucket), safePath);
   if (!fs.existsSync(target)) return res.status(404).json({ error: { message: 'not found' } });
+  // Fotos podem ser substituídas no mesmo caminho: nunca permitir cache antigo.
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.sendFile(target);
 });
 

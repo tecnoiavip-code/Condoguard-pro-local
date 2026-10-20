@@ -53,6 +53,7 @@ export const Residents = () => {
     phone: '',
     email: '',
     photo: '',
+    photoRemoved: false,
     vehiclePlate: '',
     vehicleModel: '',
     vehicleColor: '',
@@ -254,6 +255,7 @@ export const Residents = () => {
       phone: resident.phone || '',
       email: resident.email || '',
       photo,
+      photoRemoved: false,
       vehiclePlate: resident.vehiclePlate || '',
       vehicleModel: resident.vehicleModel || '',
       vehicleColor: resident.vehicleColor || '',
@@ -296,7 +298,7 @@ export const Residents = () => {
         canvasRef.current.height = videoRef.current.videoHeight;
         context.drawImage(videoRef.current, 0, 0);
         const photoData = canvasRef.current.toDataURL('image/jpeg', 0.7);
-        setFormData({ ...formData, photo: photoData });
+        setFormData({ ...formData, photo: photoData, photoRemoved: false });
         stopCamera();
         toast.success('Foto capturada!');
       }
@@ -308,7 +310,7 @@ export const Residents = () => {
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setFormData({ ...formData, photo: reader.result as string });
+        setFormData({ ...formData, photo: reader.result as string, photoRemoved: false });
         toast.success('Foto carregada!');
       };
       reader.readAsDataURL(file);
@@ -414,6 +416,7 @@ export const Residents = () => {
       phone: '',
       email: '',
       photo: '',
+      photoRemoved: false,
       vehiclePlate: '',
       vehicleModel: '',
       vehicleColor: '',
@@ -854,7 +857,7 @@ export const Residents = () => {
                       </Button>
                     )}
                     {formData.photo && (
-                      <Button type="button" size="sm" variant="destructive" onClick={() => setFormData({ ...formData, photo: '' })}>
+                      <Button type="button" size="sm" variant="destructive" onClick={() => setFormData({ ...formData, photo: '', photoRemoved: true })}>
                         🗑️ Remover
                       </Button>
                     )}

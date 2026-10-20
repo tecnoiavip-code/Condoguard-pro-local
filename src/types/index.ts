@@ -6,6 +6,8 @@ export interface Resident {
   phone?: string;
   email?: string;
   photo?: string;
+  /** Marca explícita de que o usuário removeu a foto (evita apagar foto por engano). */
+  photoRemoved?: boolean;
   vehiclePlate?: string;
   vehicleModel?: string;
   vehicleColor?: string;

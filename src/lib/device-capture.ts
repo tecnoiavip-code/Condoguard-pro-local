@@ -16,6 +16,22 @@ function getDeviceSerial(device: Device): string {
   return device.serialNumber || device.id;
 }
 
+/**
+ * Verifica no Storage se o morador já possui foto. A lista de moradores usada
+ * pelo app costuma vir sem fotos (`photo` vazio), então não dá para confiar
+ * apenas no campo em memória.
+ */
+async function residentHasStoredPhoto(residentId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase.storage
+      .from('resident-photos')
+      .list(residentId, { limit: 1 });
+    return !!(data && data.length > 0);
+  } catch {
+    return false;
+  }
+}
+
 function normalizePushResult(result: any): any {
   if (!result || typeof result !== 'object') return result || {};
   const parse = (v: unknown) => {
@@ -424,8 +440,10 @@ export async function syncPhotosFromDevices(
         continue;
       }
 
-      // Skip if resident already has a photo
-      if (matchedResident.photo) {
+      // Skip if resident already has a photo (em memória OU no Storage).
+      // Sem checar o Storage, um morador com foto tinha a imagem sobrescrita
+      // pela foto antiga gravada no dispositivo.
+      if (matchedResident.photo || await residentHasStoredPhoto(matchedResident.id)) {
         skipped++;
         continue;
       }
@@ -751,8 +769,8 @@ export async function reconcileFromDevices(
       const resident = byHashId.get(u.id) || matchByName(u.name || '');
       if (!resident) { skipped++; continue; }
 
-      // Skip if resident already has photo OR device has no photo
-      if ((resident as any).photo) { skipped++; continue; }
+      // Skip if resident already has photo (em memória OU no Storage) ou se o dispositivo não tem foto
+      if ((resident as any).photo || await residentHasStoredPhoto(resident.id)) { skipped++; continue; }
       if (!u.image_timestamp || u.image_timestamp <= 0) { skipped++; continue; }
 
       try {

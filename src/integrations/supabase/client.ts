@@ -249,7 +249,8 @@ function storageFrom(bucket: string): StorageApi {
       return request(`/api/storage/list?${params.toString()}`);
     },
     async createSignedUrl(path: string) {
-      const signedUrl = `/api/storage/file?bucket=${encodeURIComponent(bucket)}&path=${encodeURIComponent(path)}`;
+      // `v` evita que o WebView reaproveite a imagem antiga do cache.
+      const signedUrl = `/api/storage/file?bucket=${encodeURIComponent(bucket)}&path=${encodeURIComponent(path)}&v=${Date.now()}`;
       return { data: { signedUrl }, error: null };
     },
     async upload(path: string, file: File | string) {
