@@ -117,6 +117,7 @@ const BOOLEAN_COLUMNS = {
   access_entries: ['auto_recognized'],
   blocked_visitors: ['is_active'],
   controlid_config: ['is_active'],
+  devices: ['is_active'],
   controlid_logs: ['processed'],
   portaria_equipment: ['is_active'],
   chat_messages: ['read'],

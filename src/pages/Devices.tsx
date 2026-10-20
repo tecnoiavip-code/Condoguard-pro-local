@@ -63,6 +63,7 @@ export const Devices = () => {
     status: 'online' as Device['status'],
     ipAddress: '',
     serialNumber: '',
+    isActive: true,
   });
 
   const handleSyncAll = async () => {
@@ -162,6 +163,7 @@ export const Devices = () => {
       status: device.status,
       ipAddress: device.ipAddress || '',
       serialNumber: device.serialNumber || '',
+      isActive: device.isActive !== false,
     });
     setShowForm(true);
   };
@@ -171,12 +173,12 @@ export const Devices = () => {
     await deleteDevice(id);
   };
 
-  const toggleStatus = async (id: string) => {
+  const toggleActive = async (id: string) => {
     const device = devices.find(d => d.id === id);
     if (!device) return;
     await saveDevice({
       ...device,
-      status: device.status === 'online' ? 'offline' : 'online',
+      isActive: device.isActive === false,
       lastSync: new Date().toISOString(),
     });
   };
@@ -185,7 +187,7 @@ export const Devices = () => {
     setEditingId('');
     setFormData({
       name: '', type: 'facial_recognition', location: '', status: 'online',
-      ipAddress: '', serialNumber: '',
+      ipAddress: '', serialNumber: '', isActive: true,
     });
     setShowForm(false);
   };
@@ -394,10 +396,14 @@ export const Devices = () => {
                       <p className="text-xs text-muted-foreground">{getDeviceTypeName(device.type)}</p>
                     </div>
                   </div>
-                  <Badge variant={device.status === 'online' ? 'default' : 'destructive'}>
-                    {device.status === 'online' ? <Wifi className="h-3 w-3 mr-1" /> : <WifiOff className="h-3 w-3 mr-1" />}
-                    {device.status === 'online' ? 'Online' : 'Offline'}
-                  </Badge>
+                  {device.isActive === false ? (
+                    <Badge variant="secondary">Desativado</Badge>
+                  ) : (
+                    <Badge variant={device.status === 'online' ? 'default' : 'destructive'}>
+                      {device.status === 'online' ? <Wifi className="h-3 w-3 mr-1" /> : <WifiOff className="h-3 w-3 mr-1" />}
+                      {device.status === 'online' ? 'Online' : 'Offline'}
+                    </Badge>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -427,11 +433,11 @@ export const Devices = () => {
                 <div className="flex gap-2 pt-2 flex-wrap">
                   <Button
                     size="sm"
-                    variant="outline"
-                    onClick={() => toggleStatus(device.id)}
+                    variant={device.isActive === false ? 'default' : 'outline'}
+                    onClick={() => toggleActive(device.id)}
                     className="flex-1"
                   >
-                    {device.status === 'online' ? 'Desativar' : 'Ativar'}
+                    {device.isActive === false ? 'Ativar' : 'Desativar'}
                   </Button>
                   <Button
                     size="sm"

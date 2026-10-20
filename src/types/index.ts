@@ -59,6 +59,8 @@ export interface Device {
   lastSync: string;
   ipAddress?: string;
   serialNumber?: string;
+  /** Ligado/desligado do dispositivo. Desativado = não aciona relé (tag nem facial). */
+  isActive?: boolean;
 }
 
 export interface RealtimeEvent {

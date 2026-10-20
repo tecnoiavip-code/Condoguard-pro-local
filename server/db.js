@@ -130,7 +130,8 @@ CREATE TABLE IF NOT EXISTS devices (
   name TEXT NOT NULL,
   serial_number TEXT,
   status TEXT,
-  type TEXT
+  type TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS controlid_config (
@@ -370,6 +371,12 @@ db.prepare("UPDATE visitor_authorizations SET qr_code_token = ? WHERE qr_code_to
 // Garante default em todos (CREATE TABLE não reaplica em bancos antigos).
 db.prepare('UPDATE visitor_authorizations SET single_use = 1 WHERE single_use IS NULL').run();
 db.prepare('UPDATE visitor_authorizations SET entry_count = 0 WHERE entry_count IS NULL').run();
+
+// Migração assistida: liga/desliga do dispositivo (coluna nova em devices). Um
+// dispositivo desativado não aciona relé (tag nem facial) no webhook Control iD.
+const deviceCols = new Set(db.prepare('PRAGMA table_info(devices)').all().map(c => c.name));
+if (!deviceCols.has('is_active')) db.exec('ALTER TABLE devices ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+db.prepare('UPDATE devices SET is_active = 1 WHERE is_active IS NULL').run();
 
 export function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');

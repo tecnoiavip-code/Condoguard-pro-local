@@ -662,6 +662,7 @@ export const supabaseStorage = {
       lastSync: d.last_sync,
       ipAddress: d.ip_address || '',
       serialNumber: d.serial_number || '',
+      isActive: !(d.is_active === false || d.is_active === 0 || d.is_active === '0'),
     }));
   },
 
@@ -675,6 +676,7 @@ export const supabaseStorage = {
       status: device.status,
       ip_address: device.ipAddress || null,
       serial_number: device.serialNumber || null,
+      is_active: device.isActive ?? true,
     };
 
     if (isNew) {

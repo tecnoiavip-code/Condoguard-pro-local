@@ -566,6 +566,7 @@ export function registerControlidWebhook(app, ctx) {
   }
 
   const deviceTypeCache = new Map();
+  const deviceActiveCache = new Map();
   const lastDeviceStatusWriteMap = new Map();
   const deviceRowIdCache = new Map();
   const lastConfigRefreshCheckMap = new Map();
@@ -577,6 +578,19 @@ export function registerControlidWebhook(app, ctx) {
   const DEVICE_STATUS_WRITE_INTERVAL_MS = 180000;
   const STALE_SWEEP_INTERVAL_MS = 60000;
   const EMPTY_QUEUE_CACHE_MS = 8000;
+
+  function isDeviceActive(deviceId) {
+    if (!deviceId) return true;
+    if (deviceActiveCache.has(deviceId)) return deviceActiveCache.get(deviceId) !== false;
+    try {
+      const row = db.prepare('SELECT is_active FROM devices WHERE serial_number = ? OR ip_address = ? LIMIT 1').get(deviceId, deviceId);
+      const active = !(row?.is_active === 0 || row?.is_active === '0' || row?.is_active === false);
+      deviceActiveCache.set(deviceId, active);
+      return active;
+    } catch (e) {
+      return true;
+    }
+  }
 
   function updateDeviceStatus(deviceId) {
     const nowMs = Date.now();
@@ -592,6 +606,7 @@ export function registerControlidWebhook(app, ctx) {
     if (rowId) {
       db.prepare("UPDATE devices SET last_sync = ?, status = 'online' WHERE id = ?").run(now(), rowId);
       const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(rowId);
+      deviceActiveCache.set(deviceId, !(updated?.is_active === 0 || updated?.is_active === '0' || updated?.is_active === false));
       notifyRealtime('devices', 'UPDATE', updated);
     }
   }
@@ -962,6 +977,20 @@ export function registerControlidWebhook(app, ctx) {
       if (eventType === 'identification_event') {
         // Critical: the device has a short timeout (~15s) and will NOT open the door if
         // the response is delayed by database operations.
+        if (!isDeviceActive(effectiveDeviceId)) {
+          console.log('Device disabled, denying identification:', effectiveDeviceId);
+          const identResponse = buildDeniedResponse(payload, urlPath);
+          res.set(corsHeaders).status(200).json(identResponse);
+          runBackground('identificationPostProcessDisabled', (async () => {
+            try {
+              const enrichedPayload = payload;
+              insertControlidLog(effectiveDeviceId, eventType, enrichedPayload, false);
+            } catch (e) {
+              console.error('Error in disabled device post-processing:', e);
+            }
+          })());
+          return;
+        }
         const [deviceType, decision] = await Promise.all([
           Promise.resolve(resolveDeviceType(effectiveDeviceId)),
           evaluateCentralAccess(db, payload),
@@ -1103,6 +1132,11 @@ export function registerControlidWebhook(app, ctx) {
 
       // ===== Eventos NÃO relacionados a identificação =====
       // Sem captura de fotos: a portaria só precisa do nome/horário na tela.
+      if (!isDeviceActive(effectiveDeviceId) && eventType !== 'device_is_alive') {
+        console.log('Device disabled, ignoring non-identification event:', effectiveDeviceId, eventType);
+        res.set(corsHeaders).status(200).end('');
+        return;
+      }
       try {
         insertControlidLog(effectiveDeviceId, eventType, payload, false);
       } catch (e) {
