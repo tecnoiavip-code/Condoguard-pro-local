@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { LayoutDashboard, Users, FileText, Mail, ScrollText, Settings, Smartphone, ClipboardList, MessageSquare, Shield, MailSearch, Megaphone } from 'lucide-react';
+import { LayoutDashboard, Users, FileText, Mail, ScrollText, Settings, Smartphone, ClipboardList, MessageSquare, Shield, MailSearch, Megaphone, Sparkles, ArrowRight } from 'lucide-react';
 
 interface SidebarProps {
   activeSection: string;
@@ -71,8 +71,23 @@ export const Sidebar = ({ activeSection, onSectionChange, isOpen }: SidebarProps
       </div>
       
       <div className="border-t border-border p-4 space-y-2 bg-muted/30">
+        <a
+          href="/apresentacao"
+          className="group mb-3 flex items-center gap-3 rounded-xl border border-primary/20 bg-gradient-to-r from-primary/10 to-transparent px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10"
+        >
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
+            <Sparkles className="h-4 w-4" />
+          </span>
+          <span className="flex-1 leading-tight">
+            Conheça o PortalGuard
+            <span className="block text-[11px] font-normal text-muted-foreground">
+              Recursos e diferenciais
+            </span>
+          </span>
+          <ArrowRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+        </a>
         <div className="text-xs text-muted-foreground space-y-1">
-          <p className="font-semibold text-foreground">© 2024 CondoGuard Pro</p>
+          <p className="font-semibold text-foreground">© {new Date().getFullYear()} PortalGuard</p>
           <p>Todos os direitos reservados</p>
           <div className="flex flex-wrap gap-2 pt-2">
             <a href="#" className="hover:text-primary transition-colors">Política de Privacidade</a>
