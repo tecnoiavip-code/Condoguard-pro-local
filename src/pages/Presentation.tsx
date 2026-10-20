@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock,
+  Cloud,
   CreditCard,
   DatabaseBackup,
   Fingerprint,
@@ -183,8 +184,8 @@ const features = [
   },
   {
     icon: Bell,
-    title: 'WhatsApp e push',
-    description: 'Aviso de encomenda com foto, sem digitação e sem depender de grupo de mensagens.',
+    title: 'Notificações automáticas',
+    description: 'Aviso de encomenda com foto por push e e-mail, sem digitação e sem grupo de mensagens.',
   },
   {
     icon: ShieldCheck,
@@ -193,8 +194,8 @@ const features = [
   },
   {
     icon: Smartphone,
-    title: 'Portal do morador',
-    description: 'Cada morador acompanha encomendas, autorizações e comunicados no celular.',
+    title: 'App do morador',
+    description: 'Na versão em nuvem, cada morador acompanha encomendas, autorizações, chat e comunicados no celular.',
   },
   {
     icon: MessagesSquare,
@@ -223,17 +224,65 @@ const features = [
   },
 ];
 
+const versions = [
+  {
+    name: 'PortalGuard Local',
+    tag: 'Sem internet',
+    icon: Server,
+    accent: 'border-emerald-400/25 bg-emerald-500/[0.05]',
+    iconClass: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
+    tagClass: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
+    description:
+      'Instalado em um computador do condomínio. Banco, fotos e reconhecimento facial rodam localmente.',
+    bullets: [
+      'Continua operando mesmo se a internet cair.',
+      'Leitores Control iD da mesma rede conversam direto com o PC, sem internet.',
+      'Encomendas, autorizações registradas na portaria, acessos e ocorrências no mesmo sistema.',
+      'Backup e restauração feitos no próprio condomínio.',
+      'Não inclui app do morador nem notificações push por e-mail.',
+    ],
+  },
+  {
+    name: 'PortalGuard Nuvem',
+    tag: 'Versão completa',
+    icon: Cloud,
+    accent: 'border-sky-400/30 bg-sky-500/[0.06]',
+    iconClass: 'border-sky-400/25 bg-sky-400/10 text-sky-300',
+    tagClass: 'border-sky-400/25 bg-sky-400/10 text-sky-300',
+    description:
+      'Sistema completo hospedado na nuvem, com acesso de qualquer lugar e o app do morador.',
+    bullets: [
+      'Requer internet para todas as funções.',
+      'App do morador com encomendas, autorizações, chat e comunicados.',
+      'Notificações push e e-mail, além de leitura de etiquetas por IA.',
+      'Equipe acessa de qualquer computador ou celular.',
+      'Atualizações automáticas e dados em nuvem dedicada.',
+    ],
+  },
+];
+
+const versionRows = [
+  { label: 'Internet', local: 'Não precisa', cloud: 'Obrigatória' },
+  { label: 'Onde roda', local: 'PC do condomínio', cloud: 'Servidor em nuvem' },
+  { label: 'Control iD', local: 'Rede local, direto no PC', cloud: 'Via internet' },
+  { label: 'App do morador', local: 'Não possui', cloud: 'Completo' },
+  { label: 'Push e e-mail', local: 'Não possui', cloud: 'Sim' },
+  { label: 'Leitura de etiquetas por IA', local: 'Não possui', cloud: 'Sim' },
+  { label: 'Acesso da equipe', local: 'PC e rede interna', cloud: 'De qualquer lugar' },
+  { label: 'Atualizações', local: 'Instalador manual', cloud: 'Automáticas' },
+];
+
 const comparisonRows: Array<{
   label: string;
   portalguard: 'yes' | 'partial' | 'no';
   apps: 'yes' | 'partial' | 'no';
   sheets: 'yes' | 'partial' | 'no';
 }> = [
-  { label: 'Funciona sem internet', portalguard: 'yes', apps: 'no', sheets: 'partial' },
+  { label: 'Operação sem internet (versão local)', portalguard: 'yes', apps: 'no', sheets: 'partial' },
   { label: 'Reconhecimento facial integrado', portalguard: 'yes', apps: 'partial', sheets: 'no' },
   { label: 'TAG veicular no mesmo cadastro', portalguard: 'yes', apps: 'partial', sheets: 'no' },
   { label: 'Encomendas com foto e aviso automático', portalguard: 'yes', apps: 'partial', sheets: 'no' },
-  { label: 'Portal do morador com login próprio', portalguard: 'yes', apps: 'yes', sheets: 'no' },
+  { label: 'App do morador com login próprio (nuvem)', portalguard: 'yes', apps: 'yes', sheets: 'no' },
   { label: 'Auditoria completa de acessos', portalguard: 'yes', apps: 'partial', sheets: 'no' },
   { label: 'Dados sob controle do condomínio', portalguard: 'yes', apps: 'no', sheets: 'yes' },
   { label: 'Implantação e suporte em português', portalguard: 'yes', apps: 'partial', sheets: 'no' },
@@ -283,15 +332,15 @@ const steps = [
 const faqs = [
   {
     q: 'Preciso de internet para o controle de acesso funcionar?',
-    a: 'Não. O motor de reconhecimento facial roda no servidor local do condomínio. A nuvem é usada para portal do morador, notificações, relatórios e sincronização. Se a conexão cair, a portaria continua operando.',
+    a: 'Depende da versão. Na versão local, não: o servidor, o banco e o reconhecimento facial rodam no computador do condomínio, e os leitores Control iD da mesma rede se comunicam direto com ele. Na versão em nuvem, sim: o sistema, o app do morador e os dispositivos dependem da conexão.',
   },
   {
     q: 'Quais dispositivos são compatíveis?',
-    a: 'A integração é nativa com os equipamentos Control iD usados para reconhecimento facial, TAG veicular e cartão. A arquitetura também permite evoluir para novos modelos e fabricantes.',
+    a: 'A integração é nativa com os equipamentos Control iD usados para reconhecimento facial, TAG veicular e cartão. Na versão local, os leitores se conectam pela rede do condomínio; na nuvem, pela internet.',
   },
   {
     q: 'Onde ficam os dados do condomínio?',
-    a: 'Você escolhe: no seu próprio servidor local ou em um projeto em nuvem dedicado. Em ambos os casos, o acesso é validado no servidor, controlado por papel e registrado para auditoria.',
+    a: 'Na versão local, no computador do condomínio. Na versão em nuvem, em um projeto dedicado na nuvem. Em ambos os casos, o acesso é validado no servidor, controlado por papel e registrado para auditoria.',
   },
   {
     q: 'Quanto tempo leva a implantação?',
@@ -299,7 +348,7 @@ const faqs = [
   },
   {
     q: 'Existe aplicativo para o morador?',
-    a: 'Sim. O morador acessa um portal web responsivo com login próprio, direto do celular, para ver encomendas, autorizar visitantes, conversar com a portaria e receber comunicados.',
+    a: 'Sim, na versão em nuvem: o morador acessa o app com login próprio para ver encomendas, autorizar visitantes, conversar com a portaria e receber comunicados, de qualquer lugar. A versão local não inclui app do morador.',
   },
   {
     q: 'Dá para importar os cadastros que já temos?',
@@ -320,8 +369,8 @@ const marqueeItems = [
   { icon: Car, label: 'TAG veicular' },
   { icon: CreditCard, label: 'Cartão e PIN' },
   { icon: Package, label: 'Encomendas com foto' },
-  { icon: MessageSquare, label: 'Portal do morador' },
-  { icon: WifiOff, label: 'Operação offline' },
+  { icon: MessageSquare, label: 'App do morador (nuvem)' },
+  { icon: WifiOff, label: 'Versão local sem internet' },
   { icon: ShieldCheck, label: 'Auditoria completa' },
   { icon: Server, label: 'Servidor local' },
   { icon: Lock, label: 'Adequação à LGPD' },
@@ -343,11 +392,19 @@ const Presentation = () => {
       document.head.appendChild(meta);
     }
     meta.content =
-      'Reconhecimento facial, TAG veicular, encomendas com foto, autorizações e portal do morador em uma única plataforma. Funciona offline e com auditoria completa.';
+      'Duas versões do PortalGuard: local, que opera sem internet com os leitores Control iD na rede do condomínio, e nuvem, completa e com app do morador.';
 
     const previousScrollBehavior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = 'auto';
+    const hashTarget = window.location.hash
+      ? document.querySelector<HTMLElement>(window.location.hash)
+      : null;
+    if (hashTarget) {
+      hashTarget.scrollIntoView();
+    } else {
+      window.scrollTo(0, 0);
+    }
     document.documentElement.style.scrollBehavior = 'smooth';
-    window.scrollTo(0, 0);
 
     return () => {
       document.title = previousTitle;
@@ -379,6 +436,7 @@ const Presentation = () => {
 
           <nav className="hidden items-center gap-7 text-sm text-slate-300 md:flex">
             <a href="#recursos" className="transition-colors hover:text-white">Recursos</a>
+            <a href="#versoes" className="transition-colors hover:text-white">Versões</a>
             <a href="#acesso" className="transition-colors hover:text-white">Controle de acesso</a>
             <a href="#diferenciais" className="transition-colors hover:text-white">Diferenciais</a>
             <a href="#como-funciona" className="transition-colors hover:text-white">Implantação</a>
@@ -414,7 +472,7 @@ const Presentation = () => {
             <div className="grid items-center gap-12 lg:grid-cols-[1.02fr_1fr] lg:gap-10">
               <div className="pg-enter">
                 <Eyebrow>
-                  <Sparkles className="h-3 w-3" /> Motor facial dentro do condomínio
+                  <Sparkles className="h-3 w-3" /> Local sem internet · Nuvem completa
                 </Eyebrow>
                 <h1 className="mt-5 text-4xl font-bold leading-[1.05] tracking-tight text-white sm:text-5xl xl:text-6xl">
                   A portaria do seu condomínio,{' '}
@@ -424,8 +482,8 @@ const Presentation = () => {
                 </h1>
                 <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-400 sm:text-lg">
                   Reconhecimento facial, TAG veicular, encomendas com foto, autorizações, chat com
-                  moradores e auditoria completa — em uma única plataforma que continua funcionando
-                  mesmo sem internet.
+                  moradores e auditoria completa. Escolha a versão local, que segue operando sem
+                  internet, ou a versão em nuvem, completa e com app do morador.
                 </p>
 
                 <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -450,7 +508,7 @@ const Presentation = () => {
                     <ShieldCheck className="h-4 w-4 text-emerald-400" /> Control iD integrado
                   </span>
                   <span className="flex items-center gap-2">
-                    <WifiOff className="h-4 w-4 text-sky-400" /> Funciona offline
+                    <WifiOff className="h-4 w-4 text-sky-400" /> Versão local sem internet
                   </span>
                   <span className="flex items-center gap-2">
                     <Lock className="h-4 w-4 text-indigo-400" /> Dados auditáveis
@@ -535,7 +593,7 @@ const Presentation = () => {
                   {[
                     'Encomenda registrada com foto, aviso automático e comprovante de retirada.',
                     'Cada acesso validado no servidor, com resultado e dispositivo registrados.',
-                    'Morador acompanha tudo pelo portal, no celular, em tempo real.',
+                    'Morador acompanha tudo pelo app, no celular, em tempo real (versão em nuvem).',
                     'Ocorrências e passagem de turno ficam documentadas e pesquisáveis.',
                   ].map((item) => (
                     <li key={item} className="flex gap-3 text-sm text-slate-300">
@@ -569,17 +627,83 @@ const Presentation = () => {
                 </Reveal>
               ))}
             </div>
+
+            <Reveal delay={160}>
+              <p className="mt-6 text-center text-xs text-slate-500">
+                App do morador, notificações push/e-mail e leitura de etiquetas por IA fazem parte da
+                versão em nuvem. A versão local opera sem internet.
+              </p>
+            </Reveal>
           </div>
+        </section>
+
+        <section id="versoes" className="mx-auto max-w-7xl px-5 py-16 lg:px-8 lg:py-24">
+          <Reveal>
+            <SectionHeading
+              eyebrow="Duas versões"
+              title="Local ou nuvem: você escolhe como operar"
+              description="As duas versões compartilham o mesmo fluxo de portaria e controle de acesso. A diferença está em onde o sistema roda e no que cada uma entrega."
+            />
+          </Reveal>
+
+          <div className="mt-10 grid gap-4 lg:grid-cols-2">
+            {versions.map((version, index) => (
+              <Reveal key={version.name} delay={index * 100}>
+                <div className={`h-full rounded-2xl border p-6 ${version.accent}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className={`grid h-11 w-11 place-items-center rounded-xl border ${version.iconClass}`}>
+                        <version.icon className="h-5 w-5" />
+                      </span>
+                      <h3 className="text-lg font-semibold text-white">{version.name}</h3>
+                    </div>
+                    <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] ${version.tagClass}`}>
+                      {version.tag}
+                    </span>
+                  </div>
+                  <p className="mt-4 text-sm leading-relaxed text-slate-400">{version.description}</p>
+                  <ul className="mt-5 space-y-3">
+                    {version.bullets.map((bullet) => (
+                      <Bullet key={bullet}>{bullet}</Bullet>
+                    ))}
+                  </ul>
+                </div>
+              </Reveal>
+            ))}
+          </div>
+
+          <Reveal delay={160}>
+            <div className="mt-8 overflow-x-auto rounded-2xl border border-white/10 bg-white/[0.02]">
+              <table className="w-full min-w-[560px] text-left text-sm">
+                <thead className="bg-white/[0.04] text-[11px] uppercase tracking-[0.14em] text-slate-400">
+                  <tr>
+                    <th className="px-5 py-4 font-semibold">Comparativo</th>
+                    <th className="px-5 py-4 font-semibold text-emerald-300">Local</th>
+                    <th className="px-5 py-4 font-semibold text-sky-300">Nuvem</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {versionRows.map((row) => (
+                    <tr key={row.label} className="transition-colors hover:bg-white/[0.02]">
+                      <td className="px-5 py-3.5 text-slate-200">{row.label}</td>
+                      <td className="px-5 py-3.5 text-slate-400">{row.local}</td>
+                      <td className="px-5 py-3.5 text-slate-300">{row.cloud}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Reveal>
         </section>
 
         <DeepDive
           id="acesso"
           eyebrow="Controle de acesso"
           title="Acesso que continua funcionando sem internet"
-          description="O motor de reconhecimento facial roda no servidor do condomínio. A decisão de acesso é registrada no banco e o relé só é acionado quando a credencial é válida."
+          description="Na versão local, o motor de reconhecimento facial roda no servidor do condomínio e os leitores Control iD da mesma rede falam direto com o PC. Na versão em nuvem, os dispositivos se conectam pela internet. Em ambos os casos, o relé só é acionado quando a credencial é válida."
           bullets={[
             'Integração nativa com Control iD para facial, TAG veicular e cartão.',
-            'Reconhecimento e acionamento do relé funcionando de forma local.',
+            'Versão local: leitores e servidor conversam pela rede do condomínio, sem internet.',
             'Dispositivo desativado não libera acesso — nem por facial, nem por TAG.',
             'Cada tentativa gera log com resultado, dispositivo e horário.',
           ]}
@@ -601,11 +725,11 @@ const Presentation = () => {
         />
 
         <DeepDive
-          eyebrow="Morador conectado"
+          eyebrow="Nuvem · Morador conectado"
           title="O morador participa — sem depender da portaria"
-          description="Cada morador tem seu próprio acesso para autorizar visitantes, acompanhar encomendas e falar com a portaria. A equipe ganha tempo e o morador ganha autonomia."
+          description="Na versão em nuvem, cada morador tem seu próprio acesso para autorizar visitantes, acompanhar encomendas e falar com a portaria. A equipe ganha tempo e o morador ganha autonomia."
           bullets={[
-            'Portal do morador responsivo, com login próprio e seguro.',
+            'App do morador com login próprio e seguro, de qualquer lugar.',
             'Autorização de visitantes e prestadores com antecedência e validade.',
             'Chat direto com a portaria, com histórico registrado.',
             'Comunicados e avisos segmentados por bloco ou condomínio.',
@@ -806,6 +930,7 @@ const Presentation = () => {
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Produto</p>
               <ul className="mt-4 space-y-2 text-sm text-slate-500">
                 <li><a href="#recursos" className="transition-colors hover:text-sky-300">Recursos</a></li>
+                <li><a href="#versoes" className="transition-colors hover:text-sky-300">Local x Nuvem</a></li>
                 <li><a href="#acesso" className="transition-colors hover:text-sky-300">Controle de acesso</a></li>
                 <li><a href="#diferenciais" className="transition-colors hover:text-sky-300">Diferenciais</a></li>
                 <li><a href="#como-funciona" className="transition-colors hover:text-sky-300">Implantação</a></li>
