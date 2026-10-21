@@ -12,6 +12,7 @@ import GuestPassScanner from '@/components/GuestPassScanner';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AccessEntry, Resident, Device } from '@/types';
 import { formatCPF, formatPlate, getStayAlert } from '@/lib/utils';
+import { compressToDataUrl } from '@/lib/image-utils';
 import { useAccessEntries } from '@/hooks/useAccessEntries';
 import { useResidents } from '@/hooks/useResidents';
 import { useDevices } from '@/hooks/useDevices';
@@ -319,11 +320,13 @@ export const NewRegistry = () => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setFormData({
-          ...formData,
-          photo: reader.result as string
-        });
+      reader.onloadend = async () => {
+        const raw = reader.result as string;
+        const jpeg = await compressToDataUrl(raw, { format: 'jpeg', quality: 0.9, maxDimension: 1600 });
+        setFormData(prev => ({
+          ...prev,
+          photo: jpeg || raw
+        }));
         toast.success('Foto carregada com sucesso!');
       };
       reader.readAsDataURL(file);
