@@ -50,7 +50,7 @@ const Index = () => {
         onSectionChange={handleSectionChange}
         isOpen={sidebarOpen}
       />
-      <main className="flex-1 p-6 md:ml-0 overflow-x-hidden">
+      <main className="min-w-0 flex-1 overflow-y-auto overscroll-contain p-6">
         {renderSection()}
       </main>
     </Layout>

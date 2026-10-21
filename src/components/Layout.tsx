@@ -90,8 +90,8 @@ export const Layout = ({ children }: LayoutProps) => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <header className="bg-primary text-primary-foreground shadow-elegant sticky top-0 z-30">
+    <div className="fixed inset-0 flex flex-col overflow-hidden bg-background">
+      <header className="bg-primary text-primary-foreground shadow-elegant z-30 shrink-0">
         <div className="container mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
@@ -197,7 +197,7 @@ export const Layout = ({ children }: LayoutProps) => {
         />
       )}
 
-      <div className="flex">
+      <div className="flex min-h-0 flex-1">
         {children}
       </div>
     </div>
