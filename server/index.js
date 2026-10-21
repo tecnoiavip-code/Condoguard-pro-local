@@ -927,6 +927,17 @@ app.get('/cert/ca', (req, res) => {
 // ---------- Static (build do frontend) ----------
 const distDir = process.env.PORTALGUARD_WEB_DIR || path.join(__dirname, '..', 'dist');
 if (fs.existsSync(distDir)) {
+  // Apresentação pública: HTML próprio (metadados de compartilhamento), fora do
+  // shell do app. Precisa vir antes do static/fallback do SPA.
+  const presentationFile = path.join(distDir, 'apresentacao', 'index.html');
+  app.get(['/apresentacao', '/apresentacao/'], (req, res) => {
+    if (!fs.existsSync(presentationFile)) {
+      return res.status(404).send('Apresentacao indisponivel nesta versao.');
+    }
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(presentationFile);
+  });
+
   app.use(express.static(distDir));
   app.get(/^\/(?!api\/|_vite|@vite|src\/|node_modules).*/, (req, res) => {
     res.sendFile(path.join(distDir, 'index.html'));

@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Sparkles } from 'lucide-react';
 import { translateAuthError } from '@/lib/translate-auth-error';
 import appLogo from '@/assets/app-icon-v18-preview.png';
 
@@ -127,6 +127,12 @@ export const Auth = () => {
           </div>
           <CardTitle className="text-2xl">PortalGuard Pro</CardTitle>
           <CardDescription>Sistema de controle de acesso seguro</CardDescription>
+          <a
+            href="/apresentacao"
+            className="mt-2 inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-primary"
+          >
+            <Sparkles className="h-3.5 w-3.5" /> Conheça o PortalGuard
+          </a>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="login" className="w-full">

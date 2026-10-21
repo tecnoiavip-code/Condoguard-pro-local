@@ -30,12 +30,12 @@ export const Sidebar = ({ activeSection, onSectionChange, isOpen }: SidebarProps
   return (
     <aside
       className={cn(
-        'fixed md:sticky top-[88px] z-20 w-80 h-[calc(100vh-88px)] bg-card shadow-card transition-transform duration-300 overflow-y-auto',
+        'fixed md:sticky top-[88px] z-20 w-80 h-[calc(100vh-88px)] bg-card shadow-card transition-transform duration-300 overflow-hidden flex flex-col',
         'md:translate-x-0',
         isOpen ? 'translate-x-0' : '-translate-x-full'
       )}
     >
-      <div className="p-6 space-y-6">
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {groups.map((group) => (
           <div key={group}>
             <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">
@@ -70,21 +70,14 @@ export const Sidebar = ({ activeSection, onSectionChange, isOpen }: SidebarProps
         ))}
       </div>
       
-      <div className="border-t border-border p-4 space-y-2 bg-muted/30">
+      <div className="shrink-0 border-t border-border p-4 space-y-2 bg-muted/30">
         <a
           href="/apresentacao"
-          className="group mb-3 flex items-center gap-3 rounded-xl border border-primary/20 bg-gradient-to-r from-primary/10 to-transparent px-3 py-2.5 text-sm font-semibold text-foreground transition-colors hover:border-primary/40 hover:bg-primary/10"
+          className="group mb-2 flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
         >
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
-            <Sparkles className="h-4 w-4" />
-          </span>
-          <span className="flex-1 leading-tight">
-            Conheça o PortalGuard
-            <span className="block text-[11px] font-normal text-muted-foreground">
-              Recursos e diferenciais
-            </span>
-          </span>
-          <ArrowRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+          <Sparkles className="h-3.5 w-3.5" />
+          <span className="flex-1">Conheça o PortalGuard</span>
+          <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
         </a>
         <div className="text-xs text-muted-foreground space-y-1">
           <p className="font-semibold text-foreground">© {new Date().getFullYear()} PortalGuard</p>

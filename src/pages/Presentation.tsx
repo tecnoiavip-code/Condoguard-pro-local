@@ -1,5 +1,4 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
 import {
   ArrowRight,
   BarChart3,
@@ -11,6 +10,7 @@ import {
   ClipboardList,
   Clock,
   Cloud,
+  Copy,
   CreditCard,
   DatabaseBackup,
   Fingerprint,
@@ -24,6 +24,7 @@ import {
   Phone,
   ScanFace,
   Server,
+  Share2,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -379,6 +380,30 @@ const marqueeItems = [
 
 const Presentation = () => {
   const [scrolled, setScrolled] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleShare = async () => {
+    const url = `${window.location.origin}/apresentacao/`;
+    if (typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: 'PortalGuard',
+          text: 'Conheça o PortalGuard — portaria e controle de acesso',
+          url,
+        });
+        return;
+      } catch {
+        // usuário cancelou o compartilhamento nativo
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2400);
+    } catch {
+      // sem permissão para copiar
+    }
+  };
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -452,12 +477,21 @@ const Presentation = () => {
             >
               Falar com especialista
             </a>
-            <Link
-              to="/"
+            <button
+              type="button"
+              onClick={handleShare}
+              aria-label="Compartilhar esta página"
+              title={copied ? 'Link copiado!' : 'Compartilhar esta página'}
+              className="hidden h-9 w-9 items-center justify-center rounded-full border border-white/15 text-slate-300 transition-colors hover:border-sky-400/40 hover:text-white sm:inline-flex"
+            >
+              {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Share2 className="h-4 w-4" />}
+            </button>
+            <a
+              href="/"
               className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-sky-400 to-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-sky-500/25 transition-transform hover:-translate-y-0.5"
             >
               Acessar sistema <ArrowRight className="h-4 w-4" />
-            </Link>
+            </a>
           </div>
         </div>
       </header>
@@ -487,12 +521,12 @@ const Presentation = () => {
                 </p>
 
                 <div className="mt-8 flex flex-wrap items-center gap-3">
-                  <Link
-                    to="/"
+                  <a
+                    href="/"
                     className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-sky-400 to-blue-600 px-6 py-3 text-sm font-semibold text-white shadow-xl shadow-sky-500/25 transition-transform hover:-translate-y-0.5"
                   >
                     Acessar o sistema <ArrowRight className="h-4 w-4" />
-                  </Link>
+                  </a>
                   <a
                     href={SUPPORT_WHATSAPP}
                     target="_blank"
@@ -902,12 +936,23 @@ const Presentation = () => {
                   >
                     Agendar demonstração <ArrowRight className="h-4 w-4" />
                   </a>
-                  <Link
-                    to="/"
+                  <button
+                    type="button"
+                    onClick={handleShare}
                     className="inline-flex items-center justify-center gap-2 rounded-full border border-white/20 bg-white/[0.04] px-6 py-3 text-sm font-semibold text-slate-100 transition-colors hover:border-white/35"
                   >
+                    {copied ? (
+                      <><Check className="h-4 w-4 text-emerald-400" /> Link copiado!</>
+                    ) : (
+                      <><Copy className="h-4 w-4" /> Copiar link da página</>
+                    )}
+                  </button>
+                  <a
+                    href="/"
+                    className="inline-flex items-center justify-center gap-2 rounded-full px-6 py-2 text-xs font-medium text-slate-400 transition-colors hover:text-white"
+                  >
                     Já sou cliente: acessar
-                  </Link>
+                  </a>
                 </div>
               </div>
             </div>
@@ -943,7 +988,7 @@ const Presentation = () => {
                 <li><a href="#faq" className="transition-colors hover:text-sky-300">Perguntas frequentes</a></li>
                 <li><a href={`mailto:${SUPPORT_EMAIL}`} className="transition-colors hover:text-sky-300">{SUPPORT_EMAIL}</a></li>
                 <li><a href={SUPPORT_WHATSAPP} target="_blank" rel="noreferrer" className="transition-colors hover:text-sky-300">{SUPPORT_PHONE_DISPLAY}</a></li>
-                <li><Link to="/" className="transition-colors hover:text-sky-300">Acessar o sistema</Link></li>
+                <li><a href="/" className="transition-colors hover:text-sky-300">Acessar o sistema</a></li>
               </ul>
             </div>
 

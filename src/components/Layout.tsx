@@ -1,5 +1,5 @@
 import { useState, useEffect, ReactNode } from 'react';
-import { Menu, Building2, User, LogOut, Bell } from 'lucide-react';
+import { Menu, Building2, User, LogOut, Bell, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { useAuth } from '@/contexts/AuthContext';
@@ -172,6 +172,12 @@ export const Layout = ({ children }: LayoutProps) => {
                 <DropdownMenuContent align="end">
                   <DropdownMenuLabel>Minha Conta</DropdownMenuLabel>
                   <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <a href="/apresentacao">
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      Conheça o PortalGuard
+                    </a>
+                  </DropdownMenuItem>
                   <DropdownMenuItem onClick={signOut}>
                     <LogOut className="mr-2 h-4 w-4" />
                     Sair
