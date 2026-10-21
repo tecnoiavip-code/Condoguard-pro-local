@@ -104,7 +104,7 @@ const KNOWN_TABLES = new Set([
   'blocked_visitors', 'chat_messages', 'controlid_config', 'controlid_logs', 'devices',
   'incidents', 'mails', 'notifications', 'portaria_equipment', 'profiles', 'push_command_queue',
   'push_subscriptions', 'realtime_events', 'residents', 'shift_acknowledgments', 'shift_equipment_checks', 'shifts',
-  'user_roles', 'vapid_keys', 'vehicles', 'visitor_authorizations',
+  'user_roles', 'vapid_keys', 'vehicles', 'visitor_authorizations', 'facial_release_requests',
 ]);
 
 const JSON_COLUMNS = {
@@ -192,6 +192,18 @@ function notifyRealtime(table, event, newRow = null, oldRow = null) {
   for (const res of realtimeClients) {
     try { res.write(`data: ${payload}\n\n`); } catch { /* ignore */ }
   }
+}
+
+// Reindexa as fotos de visitantes logo após um cadastro/entrada mudar, para que
+// o reconhecimento facial de retorno funcione sem esperar o ciclo periódico.
+let faceRefreshTimer = null;
+function scheduleFaceIndexRefresh() {
+  if (!faceEngine || faceRefreshTimer) return;
+  faceRefreshTimer = setTimeout(() => {
+    faceRefreshTimer = null;
+    faceEngine.refreshIndex().catch(() => {});
+  }, 1500);
+  if (faceRefreshTimer.unref) faceRefreshTimer.unref();
 }
 
 app.get('/api/realtime', (req, res) => {
@@ -466,6 +478,7 @@ app.post('/api/table/:table', authMiddleware, (req, res) => {
     db.prepare(`INSERT INTO \`${table}\` (\`${cols.join('`,`')}\`) VALUES (${placeholders})`).run(...cols.map(c => row[c]));
     const inserted = db.prepare(`SELECT * FROM \`${table}\` WHERE id = ?`).get(row.id);
     notifyRealtime(table, 'INSERT', sanitizeRead(table, inserted));
+    if (table === 'access_entries') scheduleFaceIndexRefresh();
     res.status(201).json({ data: [sanitizeRead(table, inserted)], error: null });
   } catch (e) {
     res.status(400).json({ data: null, error: { message: e.message } });
@@ -489,6 +502,7 @@ app.patch('/api/table/:table', authMiddleware, (req, res) => {
     const updatedRows = db.prepare(`SELECT * FROM \`${table}\`${where}`).all(...params);
     const mapped = updatedRows.map(r => sanitizeRead(table, r));
     mapped.forEach(r => notifyRealtime(table, 'UPDATE', r, oldRows.find(o => o.id === r.id) || null));
+    if (table === 'access_entries') scheduleFaceIndexRefresh();
     res.json({ data: mapped, error: null });
   } catch (e) {
     res.status(400).json({ data: null, error: { message: e.message } });
@@ -505,6 +519,7 @@ app.delete('/api/table/:table', authMiddleware, (req, res) => {
     const oldRows = db.prepare(`SELECT * FROM \`${table}\`${where}`).all(...params);
     db.prepare(`DELETE FROM \`${table}\`${where}`).run(...params);
     oldRows.forEach(r => notifyRealtime(table, 'DELETE', null, sanitizeRead(table, r)));
+    if (table === 'access_entries') scheduleFaceIndexRefresh();
     res.json({ data: null, error: null });
   } catch (e) {
     res.status(400).json({ data: null, error: { message: e.message } });
@@ -544,6 +559,7 @@ app.post('/api/table/:table/upsert', authMiddleware, (req, res) => {
       errors.push(e.message);
     }
   }
+  if (table === 'access_entries') scheduleFaceIndexRefresh();
   const error = errors.length > 0 ? { message: errors.join('; ') } : null;
   res.status(error ? 400 : 200).json({ data: inserted.map(r => sanitizeRead(table, r)), error });
 });
@@ -886,6 +902,180 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
       db.prepare('INSERT INTO realtime_events (id, type, description, timestamp, priority, related_id, created_at) VALUES (?,?,?,?,?,?,?)')
         .run(genId(), 'mail', `Correspondência registrada para ${resident?.name || 'morador'}`, now(), 'medium', mail_id || null, now());
       return res.json({ data: { ok: true }, error: null });
+    }
+
+    // Liberação facial de uso único para cadastros do Novo Cadastro.
+    // A portaria recebe o pedido quando a pessoa retorna; aprovar cria uma
+    // nova visita (entrada + saída) e aciona o relé do leitor remotamente.
+    if (name === 'facial-release') {
+      const staffRoles = getUserRoles(req.user.id);
+      const isStaff = staffRoles.some((role) => ['admin', 'security_guard', 'receptionist'].includes(role));
+      if (!isStaff) return res.status(403).json({ error: { message: 'Acesso restrito à equipe da portaria' } });
+
+      const action = String(body.action || 'list');
+      const ts = now();
+      const ttlCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+
+      db.prepare(`UPDATE facial_release_requests SET status = 'expired', resolved_at = ?
+        WHERE status = 'pending' AND requested_at < ?`).run(ts, ttlCutoff);
+
+      const resolvePhotoUrl = (value) => {
+        if (!value) return null;
+        if (String(value).startsWith('data:') || /^https?:/i.test(String(value))) return value;
+        return `/api/storage/file?bucket=entry-photos&path=${encodeURIComponent(String(value))}&v=${Date.now()}`;
+      };
+
+      if (action === 'list') {
+        const rows = db.prepare(`SELECT * FROM facial_release_requests
+          WHERE status = 'pending' ORDER BY requested_at DESC LIMIT 20`).all();
+        return res.json({
+          requests: rows.map((row) => ({ ...row, photo_url: resolvePhotoUrl(row.photo_url) })),
+        });
+      }
+
+      if (action === 'approve' || action === 'deny') {
+        const requestId = body.request_id || body.id;
+        if (!requestId) return res.status(400).json({ error: { message: 'request_id é obrigatório' } });
+        const request = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
+        if (!request) return res.status(404).json({ error: { message: 'Pedido de liberação não encontrado' } });
+
+        if (action === 'deny') {
+          if (request.status !== 'pending') {
+            return res.status(409).json({ error: { message: 'Este pedido já foi resolvido' } });
+          }
+          db.prepare(`UPDATE facial_release_requests SET status = 'denied', resolved_at = ?, resolved_by = ?
+            WHERE id = ? AND status = 'pending'`).run(ts, req.user.id, requestId);
+          const updated = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
+          notifyRealtime('facial_release_requests', 'UPDATE', updated);
+          return res.json({ ok: true });
+        }
+
+        if (request.status !== 'pending') {
+          return res.status(409).json({ error: { message: 'Este pedido jǭ foi resolvido' } });
+        }
+
+        // O cadastro pode jǭ estar dentro (outra aprova��ǜo/entrada manual).
+        // Nǜo criar uma segunda entrada ativa para a mesma pessoa.
+        if (request.visitor_document) {
+          const activeEntry = db.prepare(`SELECT id, visitor_name, apartment FROM access_entries
+            WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
+              AND lower(visitor_document) = lower(?)
+              AND exit_time IS NULL
+            LIMIT 1`).get(request.visitor_document);
+          if (activeEntry) {
+            return res.status(409).json({
+              error: {
+                message: `${activeEntry.visitor_name} jǭ possui uma entrada ativa (${activeEntry.apartment}). Registre a sa��da antes de uma nova entrada.`,
+              },
+            });
+          }
+        }
+
+        const deviceRow = request.device_id
+          ? db.prepare('SELECT serial_number, ip_address FROM devices WHERE serial_number = ? OR ip_address = ? LIMIT 1').get(request.device_id, request.device_id)
+          : db.prepare("SELECT serial_number, ip_address FROM devices WHERE type = 'facial_recognition' AND is_active = 1 LIMIT 1").get();
+        const deviceId = deviceRow?.serial_number || request.device_id || null;
+
+        // A portaria pode escolher outro apartamento/morador nesta nova entrada.
+        let residentId = request.resident_id || null;
+        let residentName = request.resident_name || null;
+        let apartment = request.apartment || '';
+        if (body.resident_id) {
+          const chosenResident = db.prepare('SELECT id, name, apartment FROM residents WHERE id = ?').get(body.resident_id);
+          if (!chosenResident) {
+            return res.status(400).json({ error: { message: 'Morador selecionado não encontrado' } });
+          }
+          residentId = chosenResident.id;
+          residentName = chosenResident.name;
+          apartment = chosenResident.apartment || '';
+        } else if (body.apartment) {
+          apartment = String(body.apartment);
+          residentId = null;
+          residentName = body.resident_name ? String(body.resident_name) : null;
+        }
+
+        const entryId = genId();
+        const relayAction = process.env.CONTROLID_RELAY_ACTION === 'door' ? 'door' : 'sec_box';
+        const doorCommand = {
+          verb: 'POST',
+          endpoint: 'execute_actions.fcgi',
+          body: {
+            actions: [{
+              action: relayAction,
+              parameters: relayAction === 'door' ? 'door=1' : 'id=65793, reason=1',
+            }],
+          },
+          contentType: 'application/json',
+        };
+
+        let queued = false;
+        db.exec('BEGIN');
+        try {
+          db.prepare(`INSERT INTO access_entries (
+            id, apartment, auto_recognized, badge_number, company, entry_time, entry_scan_at, exit_time,
+            notes, photo_url, purpose, registered_by, resident_id, resident_name,
+            vehicle_color, vehicle_model, vehicle_plate, visitor_document, visitor_name, visitor_type
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+            entryId,
+            apartment,
+            1,
+            request.badge_number || null,
+            request.company || null,
+            ts,
+            null,
+            null,
+            'Liberação facial autorizada pela portaria',
+            request.photo_url || null,
+            request.purpose || null,
+            'reconhecimento_facial',
+            residentId,
+            residentName,
+            request.vehicle_color || null,
+            request.vehicle_model || null,
+            request.vehicle_plate || null,
+            request.visitor_document || '',
+            request.visitor_name,
+            request.visitor_type || 'visitor',
+          );
+
+          db.prepare(`UPDATE facial_release_requests
+            SET status = 'approved', resolved_at = ?, resolved_by = ?, entry_id = ?
+            WHERE id = ? AND status = 'pending'`).run(ts, req.user.id, entryId, requestId);
+
+          if (deviceId) {
+            db.prepare('INSERT INTO push_command_queue (id, command, created_at, device_id, status) VALUES (?,?,?,?,?)')
+              .run(genId(), JSON.stringify(doorCommand), ts, deviceId, 'pending');
+            queued = true;
+          }
+
+          db.exec('COMMIT');
+        } catch (e) {
+          try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+          console.error('Facial release approve error:', e);
+          return res.status(500).json({ error: { message: 'Não foi possível liberar o acesso facial' } });
+        }
+
+        const entry = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(entryId);
+        if (entry) notifyRealtime('access_entries', 'INSERT', { ...entry, auto_recognized: !!entry.auto_recognized });
+        const updatedRequest = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
+        notifyRealtime('facial_release_requests', 'UPDATE', updatedRequest);
+
+        db.prepare('INSERT INTO controlid_logs (id, device_id, event_type, payload, processed, received_at) VALUES (?,?,?,?,?,?)')
+          .run(genId(), deviceId || 'facial-release', 'facial_release', JSON.stringify({
+            action: 'approve',
+            request_id: requestId,
+            entry_id: entryId,
+            visitor_name: request.visitor_name,
+            visitor_document: request.visitor_document,
+            resolved_by: req.user.id,
+            door_command: doorCommand,
+            queued,
+          }), 1, ts);
+
+        return res.json({ ok: true, entry_id: entryId, remote_open: queued });
+      }
+
+      return res.status(400).json({ error: { message: 'Ação inválida' } });
     }
 
     res.status(404).json({ data: null, error: { message: `Unknown function: ${name}` } });

@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { FacialReleaseModal } from '@/components/FacialReleaseModal';
 
 interface LayoutProps {
   children: ReactNode;
@@ -200,6 +201,8 @@ export const Layout = ({ children }: LayoutProps) => {
       <div className="flex min-h-0 flex-1">
         {children}
       </div>
+
+      <FacialReleaseModal />
     </div>
   );
 };

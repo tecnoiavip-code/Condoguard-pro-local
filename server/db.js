@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS access_entries (
   badge_number TEXT,
   company TEXT,
   entry_time TEXT,
+  entry_scan_at TEXT,
   exit_time TEXT,
   notes TEXT,
   photo_url TEXT,
@@ -336,6 +337,44 @@ CREATE TABLE IF NOT EXISTS resident_face_descriptors (
   photo_mtime TEXT,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS visitor_face_descriptors (
+  subject_key TEXT PRIMARY KEY,
+  descriptor TEXT NOT NULL,
+  photo_path TEXT,
+  photo_mtime TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS facial_release_requests (
+  id TEXT PRIMARY KEY,
+  device_id TEXT,
+  subject_key TEXT NOT NULL,
+  visitor_name TEXT NOT NULL,
+  visitor_document TEXT,
+  visitor_type TEXT,
+  apartment TEXT,
+  resident_id TEXT,
+  resident_name TEXT,
+  photo_url TEXT,
+  company TEXT,
+  vehicle_plate TEXT,
+  vehicle_model TEXT,
+  vehicle_color TEXT,
+  purpose TEXT,
+  badge_number TEXT,
+  match_source TEXT,
+  match_distance REAL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  requested_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolved_by TEXT,
+  entry_id TEXT,
+  notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_facial_release_status
+  ON facial_release_requests (status, requested_at);
 `;
 
 db.exec(SCHEMA);
@@ -343,6 +382,11 @@ db.exec(SCHEMA);
 // Migração assistida: adiciona colunas que podem faltar em bancos criados antes
 // da versão atual do schema (ALTER TABLE ADD COLUMN não tem IF NOT EXISTS em todas
 // as versões do SQLite, então verificamos via PRAGMA table_info).
+// Migração assistida: confirmação de passagem facial (entrada) em acessos de
+// visitantes, usada para diferenciar a primeira leitura (entrada) da saída.
+const accessEntryCols = new Set(db.prepare('PRAGMA table_info(access_entries)').all().map(c => c.name));
+if (!accessEntryCols.has('entry_scan_at')) db.exec('ALTER TABLE access_entries ADD COLUMN entry_scan_at TEXT');
+
 const residentCols = new Set(db.prepare('PRAGMA table_info(residents)').all().map(c => c.name));
 if (!residentCols.has('contract_type')) db.exec('ALTER TABLE residents ADD COLUMN contract_type TEXT');
 if (!residentCols.has('contract_end_date')) db.exec('ALTER TABLE residents ADD COLUMN contract_end_date TEXT');

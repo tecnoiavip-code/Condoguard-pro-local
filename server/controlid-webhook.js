@@ -200,14 +200,14 @@ function extractDeviceId(urlPath, query, payload, req) {
 function buildIdentificationActions(payload) {
   const portalId = Number.parseInt(String(payload?.portal_id ?? '1'), 10);
   const resolvedPortal = Number.isFinite(portalId) && portalId > 0 ? portalId : 1;
+  const relayAction = process.env.CONTROLID_RELAY_ACTION === 'door' ? 'door' : 'sec_box';
 
-  // Sempre envia os DOIS pulsos: o relé interno do leitor (door) e o acionador
-  // externo SecBox. Algumas instalações ligam a fechadura/cancela ao contato seco
-  // da própria placa, e enviar apenas o sec_box deixa o relé interno sem atracar.
-  return [
-    { action: 'sec_box', parameters: 'id=65793, reason=1' },
-    { action: 'door', parameters: `door=${resolvedPortal}` },
-  ];
+  // Um �nico rel�: cada modelo tem sa�das independentes e pulsar as duas pode
+  // acionar portas diferentes. A escolha vem de CONTROLID_RELAY_ACTION.
+  return [{
+    action: relayAction,
+    parameters: relayAction === 'door' ? `door=${resolvedPortal}` : 'id=65793, reason=1',
+  }];
 }
 
 // Só é chamada quando o motor central autorizou. A decisão do banco é a juíza:
@@ -215,6 +215,7 @@ function buildIdentificationActions(payload) {
 // equipamento tenha enviado event 3 (TAG não gravada na memória do leitor).
 function buildIdentificationResponse(payload, urlPath, deviceType, decision) {
   const userId = Number.parseInt(String(payload?.user_id ?? '0'), 10);
+  const resolvedUserId = Number.parseInt(String(decision?.resolved_user_id ?? '0'), 10);
   const portalId = Number.parseInt(String(payload?.portal_id ?? '1'), 10);
   const userName = sanitizeString(payload?.user_name || payload?.name || '', 200);
   const residentName = sanitizeString(decision?.resident_name || decision?.resident || '', 200);
@@ -223,7 +224,9 @@ function buildIdentificationResponse(payload, urlPath, deviceType, decision) {
 
   const result = {
     event: 7,
-    user_id: Number.isFinite(userId) ? userId : 0,
+    user_id: Number.isFinite(resolvedUserId) && resolvedUserId > 0
+      ? resolvedUserId
+      : (Number.isFinite(userId) ? userId : 0),
     user_name: residentName || userName,
     user_image: payload?.user_has_image === 1 || payload?.user_has_image === '1'
       || payload?.user_has_image === true || payload?.user_has_image === 'true',
@@ -242,6 +245,65 @@ const DECISION_TIMEOUT_MS = 2500;
 
 const normalizeName = (value) =>
   String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+const VISITOR_ACCESS_TYPES = ['visitor', 'service_provider', 'delivery'];
+const normalizeDocument = (value) =>
+  String(value ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+const hardwareIdFor = (value) => {
+  let hash = 0;
+  const str = String(value ?? '');
+  for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
+  return Math.abs(hash);
+};
+const visitorSubjectKey = (document, name) => {
+  const doc = normalizeDocument(document);
+  if (doc.length >= 4) return `doc:${doc}`;
+  const normalizedName = normalizeName(name);
+  return normalizedName ? `name:${normalizedName}` : null;
+};
+const visitorSubjectFromEntry = (row) => ({
+  subjectKey: visitorSubjectKey(row.visitor_document, row.visitor_name),
+  name: row.visitor_name,
+  document: row.visitor_document,
+  visitorType: row.visitor_type,
+  photoUrl: row.photo_url || null,
+});
+const sameVisitorSubject = (entry, subject) => {
+  const entryKey = visitorSubjectKey(entry.visitor_document, entry.visitor_name);
+  return !!entryKey && entryKey === subject.subjectKey;
+};
+// Procura um cadastro do Novo Cadastro pelo que o equipamento enviou. O leitor
+// pode mandar o documento em `registration`, o id interno (hash de `sp-<doc>`)
+// ou apenas o nome.
+const findVisitorSubject = (db, { registration, userName, userId }) => {
+  const reg = normalizeDocument(registration);
+  const name = normalizeName(userName);
+  const uid = Number(userId) || 0;
+  if (!reg && !name && !uid) return null;
+
+  const rows = db.prepare(`SELECT visitor_name, visitor_document, visitor_type, photo_url, entry_time
+    FROM access_entries
+    WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
+    ORDER BY entry_time DESC
+    LIMIT 1000`).all();
+
+  for (const row of rows) {
+    const doc = normalizeDocument(row.visitor_document);
+    if (reg && doc && reg === doc) return visitorSubjectFromEntry(row);
+  }
+  if (uid > 0) {
+    for (const row of rows) {
+      if (!row.visitor_document) continue;
+      if (hardwareIdFor(`sp-${row.visitor_document}`) === uid) return visitorSubjectFromEntry(row);
+    }
+  }
+  if (name) {
+    for (const row of rows) {
+      if (normalizeName(row.visitor_name) === name) return visitorSubjectFromEntry(row);
+    }
+  }
+  return null;
+};
 
 const evaluateCentralAccess = async (db, payload) => {
   const work = (async () => {
@@ -316,8 +378,21 @@ const evaluateCentralAccess = async (db, payload) => {
     }
 
     if (incomingEvent === 3 || incomingEvent === 6) {
-      return { allow: false, reason: 'Não identificado', source: 'db' };
+      return { allow: false, reason: 'Nǜo identificado', source: 'db' };
     }
+
+    // O equipamento identificou alguém que não é morador: pode ser um cadastro
+    // do Novo Cadastro (visitante/prestador/entregador). A regra de uso único é
+    // aplicada depois, no fluxo de liberação facial.
+    const visitorSubject = findVisitorSubject(db, {
+      registration: payload?.registration,
+      userName,
+      userId: payload?.user_id,
+    });
+    if (visitorSubject) {
+      return { allow: false, reason: 'Visitante reconhecido', source: 'db', visitor_subject: visitorSubject };
+    }
+
     // Known by the device (staff, service providers registered locally): allow.
     return { allow: true, reason: 'Cadastro no equipamento', source: 'db' };
   })();
@@ -494,6 +569,161 @@ export function registerControlidWebhook(app, ctx) {
   // intactos por serem operacionais.
   const VISUALIZATION_LOG_TYPES = ['dao', 'access_photo', 'identification_event', 'catra_event'];
   const MAX_VISUALIZATION_LOGS = Number(process.env.PORTALGUARD_MAX_LOGS || 30);
+
+  // ============= LIBERAÇÃO FACIAL DE USO ÚNICO (NOVO CADASTRO) =============
+  // Cada visita concluída exige uma nova liberação da portaria. O leitor serve
+  // para entrada e saída: a primeira leitura confirma a entrada (janela de
+  // tolerância após o cadastro) e a seguinte registra a saída.
+  const FACIAL_GRACE_MS = Number(process.env.PORTALGUARD_FACIAL_ENTRY_GRACE_MS || 120000);
+  const FACIAL_SCAN_DEBOUNCE_MS = Number(process.env.PORTALGUARD_FACIAL_SCAN_DEBOUNCE_MS || 30000);
+  const FACIAL_REQUEST_TTL_MS = Number(process.env.PORTALGUARD_FACIAL_REQUEST_TTL_MS || 300000);
+  const FACIAL_DENY_COOLDOWN_MS = Number(process.env.PORTALGUARD_FACIAL_DENY_COOLDOWN_MS || 60000);
+
+  function isBlockedVisitor(subject) {
+    try {
+      const rows = db.prepare('SELECT visitor_document, visitor_name FROM blocked_visitors WHERE is_active = 1').all();
+      const doc = normalizeDocument(subject.document);
+      const name = normalizeName(subject.name);
+      return rows.some((b) => {
+        const blockedDoc = normalizeDocument(b.visitor_document);
+        return (doc && blockedDoc && doc === blockedDoc)
+          || (name && normalizeName(b.visitor_name) === name);
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  function loadVisitorEntries(subject) {
+    try {
+      return db.prepare(`SELECT * FROM access_entries
+        WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
+        ORDER BY entry_time DESC
+        LIMIT 1000`).all().filter((entry) => sameVisitorSubject(entry, subject));
+    } catch {
+      return [];
+    }
+  }
+
+  function decideVisitorAccess(deviceId, subject) {
+    if (!subject?.subjectKey) return null;
+
+    const visitorName = sanitizeString(subject.name, 200) || 'Visitante';
+    const base = {
+      resident: visitorName,
+      resident_name: visitorName,
+      resolved_user_id: subject.document ? hardwareIdFor(`sp-${subject.document}`) : 0,
+      visitor_subject: subject,
+    };
+
+    if (isBlockedVisitor(subject)) {
+      return { ...base, allow: false, reason: 'Pessoa bloqueada', source: 'db', visitor_action: 'blocked' };
+    }
+
+    const entries = loadVisitorEntries(subject);
+    const template = entries[0] || null;
+    const photoTemplate = entries.find((entry) => entry.photo_url) || template;
+    const active = entries.find((entry) => !entry.exit_time);
+
+    if (active) {
+      const nowMs = Date.now();
+      const entryAge = active.entry_time ? nowMs - new Date(active.entry_time).getTime() : Number.POSITIVE_INFINITY;
+      const scanAge = active.entry_scan_at ? nowMs - new Date(active.entry_scan_at).getTime() : null;
+
+      // O leitor pode capturar o mesmo rosto mais de uma vez em segundos: não
+      // transformar a segunda leitura em saída.
+      if (scanAge !== null && scanAge < FACIAL_SCAN_DEBOUNCE_MS) {
+        return { ...base, allow: true, reason: 'Entrada em andamento', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
+      }
+
+      // Entrada recém-cadastrada/aprovada: a primeira leitura apenas confirma
+      // que a pessoa entrou, sem fechar a visita.
+      if (!active.entry_scan_at && entryAge < FACIAL_GRACE_MS) {
+        const ts = now();
+        db.prepare('UPDATE access_entries SET entry_scan_at = ? WHERE id = ?').run(ts, active.id);
+        const updated = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(active.id);
+        notifyRealtime('access_entries', 'UPDATE',
+          { ...updated, auto_recognized: !!updated.auto_recognized },
+          { ...active, auto_recognized: !!active.auto_recognized });
+        return { ...base, allow: true, reason: 'Entrada confirmada', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
+      }
+
+      return { ...base, allow: true, reason: 'Saída registrada', source: 'db', visitor_action: 'exit', visitor_entry_id: active.id };
+    }
+
+    const ts = now();
+    const pending = db.prepare(`SELECT * FROM facial_release_requests
+      WHERE subject_key = ? AND status = 'pending'
+      ORDER BY requested_at DESC LIMIT 1`).get(subject.subjectKey);
+
+    if (pending) {
+      const pendingAge = Date.now() - new Date(pending.requested_at).getTime();
+      if (pendingAge <= FACIAL_REQUEST_TTL_MS) {
+        db.prepare('UPDATE facial_release_requests SET requested_at = ?, match_distance = ?, match_source = ? WHERE id = ?')
+          .run(ts, subject.distance ?? null, subject.source || 'face', pending.id);
+        return { ...base, allow: false, reason: 'Aguardando liberação da portaria', source: 'db', visitor_action: 'pending', release_request_id: pending.id };
+      }
+      db.prepare("UPDATE facial_release_requests SET status = 'expired', resolved_at = ? WHERE id = ?").run(ts, pending.id);
+    }
+
+    const denied = db.prepare(`SELECT * FROM facial_release_requests
+      WHERE subject_key = ? AND status = 'denied'
+      ORDER BY resolved_at DESC LIMIT 1`).get(subject.subjectKey);
+    if (denied?.resolved_at && (Date.now() - new Date(denied.resolved_at).getTime()) < FACIAL_DENY_COOLDOWN_MS) {
+      return { ...base, allow: false, reason: 'Liberação negada recentemente', source: 'db', visitor_action: 'denied' };
+    }
+
+    const requestId = genId();
+    const photoUrl = photoTemplate?.photo_url || subject.photoUrl || null;
+    db.prepare(`INSERT INTO facial_release_requests (
+        id, device_id, subject_key, visitor_name, visitor_document, visitor_type,
+        apartment, resident_id, resident_name, photo_url, company, vehicle_plate,
+        vehicle_model, vehicle_color, purpose, badge_number, match_source, match_distance,
+        status, requested_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      requestId,
+      deviceId || null,
+      subject.subjectKey,
+      visitorName,
+      subject.document || template?.visitor_document || null,
+      subject.visitorType || template?.visitor_type || 'visitor',
+      template?.apartment || '',
+      template?.resident_id || null,
+      template?.resident_name || null,
+      photoUrl,
+      template?.company || null,
+      template?.vehicle_plate || null,
+      template?.vehicle_model || null,
+      template?.vehicle_color || null,
+      template?.purpose || null,
+      template?.badge_number || null,
+      subject.source || 'face',
+      subject.distance ?? null,
+      'pending',
+      ts,
+    );
+
+    const row = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
+    notifyRealtime('facial_release_requests', 'INSERT', row);
+    return { ...base, allow: false, reason: 'Aguardando liberação da portaria', source: 'db', visitor_action: 'pending', release_request_id: requestId };
+  }
+
+  function closeVisitorEntry(entryId) {
+    if (!entryId) return;
+    try {
+      const entry = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(entryId);
+      if (!entry || entry.exit_time) return;
+      const ts = now();
+      db.prepare('UPDATE access_entries SET exit_time = ?, entry_scan_at = COALESCE(entry_scan_at, entry_time, ?) WHERE id = ?')
+        .run(ts, ts, entryId);
+      const updated = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(entryId);
+      notifyRealtime('access_entries', 'UPDATE',
+        { ...updated, auto_recognized: !!updated.auto_recognized },
+        { ...entry, auto_recognized: !!entry.auto_recognized });
+    } catch (e) {
+      console.error('closeVisitorEntry error:', e);
+    }
+  }
 
   function trimVisualizationLogs(max = MAX_VISUALIZATION_LOGS) {
     try {
@@ -1027,7 +1257,9 @@ export function registerControlidWebhook(app, ctx) {
               faceResult = { matched: false, reason: `erro:${e.message}` };
             }
             console.log('Face identification:', { device_id: effectiveDeviceId, address: deviceAddress, ...faceResult });
-            if (faceResult?.matched) {
+            // Visitante reconhecido NÃO abre direto: passa pela regra de uso
+            // único (saída ou liberação da portaria). Só morador abre aqui.
+            if (faceResult?.matched && faceResult.kind !== 'visitor') {
               finalDecision = {
                 allow: true,
                 source: 'face',
@@ -1048,6 +1280,28 @@ export function registerControlidWebhook(app, ctx) {
         // respondeu a tempo (fallback/timeout), respeitamos a decisão do próprio
         // equipamento (event 7 = identificou localmente) para o portão nunca abrir
         // às cegas.
+        // Cadastro do Novo Cadastro identificado pelo rosto ou pelo equipamento:
+        // aplica a regra de uso único (saída, confirmação de entrada ou pedido
+        // de liberação para a portaria).
+        if (!finalDecision.allow) {
+          const faceSubject = faceResult?.matched && faceResult.kind === 'visitor'
+            ? {
+                subjectKey: faceResult.subjectKey,
+                name: faceResult.name,
+                document: faceResult.document,
+                visitorType: faceResult.visitorType,
+                photoUrl: faceResult.photoUrl,
+                source: 'face',
+                distance: faceResult.distance,
+              }
+            : null;
+          const subject = finalDecision.visitor_subject || faceSubject;
+          if (subject) {
+            const visitorDecision = decideVisitorAccess(effectiveDeviceId, subject);
+            if (visitorDecision) finalDecision = visitorDecision;
+          }
+        }
+
         const deviceGranted = Number.parseInt(String(payload?.event ?? '0'), 10) === 7;
         const authoritative = finalDecision.source === 'db' || finalDecision.source === 'face';
         const allowByDb = authoritative ? finalDecision.allow : deviceGranted;
@@ -1085,6 +1339,12 @@ export function registerControlidWebhook(app, ctx) {
             // Prestador de servico fixo / empregado domestico: registra a
             // passagem no log de acesso (nao em "Ativos no Condominio").
             if (allowByDb) recordCollaboratorAccess(finalDecision?.resident_id);
+
+            // Visitante saindo: fecha a visita ativa (o cadastro continua
+            // existindo para a próxima liberação).
+            if (allowByDb && finalDecision.visitor_action === 'exit' && finalDecision.visitor_entry_id) {
+              closeVisitorEntry(finalDecision.visitor_entry_id);
+            }
 
             // Auto-sync de vehicle_tag
             const cardValue = String(payload.card_value || '');
