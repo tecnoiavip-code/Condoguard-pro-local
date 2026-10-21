@@ -202,7 +202,7 @@ function buildIdentificationActions(payload) {
   const resolvedPortal = Number.isFinite(portalId) && portalId > 0 ? portalId : 1;
   const relayAction = process.env.CONTROLID_RELAY_ACTION === 'door' ? 'door' : 'sec_box';
 
-  // Um �nico rel�: cada modelo tem sa�das independentes e pulsar as duas pode
+  // Um único relé: cada modelo tem saídas independentes e pulsar as duas pode
   // acionar portas diferentes. A escolha vem de CONTROLID_RELAY_ACTION.
   return [{
     action: relayAction,
@@ -378,7 +378,7 @@ const evaluateCentralAccess = async (db, payload) => {
     }
 
     if (incomingEvent === 3 || incomingEvent === 6) {
-      return { allow: false, reason: 'Nǜo identificado', source: 'db' };
+      return { allow: false, reason: 'Não identificado', source: 'db' };
     }
 
     // O equipamento identificou alguém que não é morador: pode ser um cadastro

@@ -951,11 +951,11 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
         }
 
         if (request.status !== 'pending') {
-          return res.status(409).json({ error: { message: 'Este pedido jǭ foi resolvido' } });
+          return res.status(409).json({ error: { message: 'Este pedido já foi resolvido' } });
         }
 
-        // O cadastro pode jǭ estar dentro (outra aprova��ǜo/entrada manual).
-        // Nǜo criar uma segunda entrada ativa para a mesma pessoa.
+        // O cadastro pode já estar dentro (outra aprovação/entrada manual).
+        // Não criar uma segunda entrada ativa para a mesma pessoa.
         if (request.visitor_document) {
           const activeEntry = db.prepare(`SELECT id, visitor_name, apartment FROM access_entries
             WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
@@ -965,7 +965,7 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
           if (activeEntry) {
             return res.status(409).json({
               error: {
-                message: `${activeEntry.visitor_name} jǭ possui uma entrada ativa (${activeEntry.apartment}). Registre a sa��da antes de uma nova entrada.`,
+                message: `${activeEntry.visitor_name} já possui uma entrada ativa (${activeEntry.apartment}). Registre a saída antes de uma nova entrada.`,
               },
             });
           }
