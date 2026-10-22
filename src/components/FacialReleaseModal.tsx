@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Combobox } from '@/components/ui/combobox';
 import { ScanFace, ShieldCheck, ShieldX, Clock, MapPin, User, Building2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
@@ -71,6 +71,12 @@ export const FacialReleaseModal = () => {
     };
   }, [user]);
 
+  const pending = requests.find((request) => !dismissed.has(request.id)) || null;
+  const pendingId = pending?.id;
+  const pendingResidentId = pending?.resident_id;
+  const pendingApartment = pending?.apartment;
+  const pendingResidentName = pending?.resident_name;
+
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -86,13 +92,8 @@ export const FacialReleaseModal = () => {
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, pendingId]);
 
-  const pending = requests.find((request) => !dismissed.has(request.id)) || null;
-  const pendingId = pending?.id;
-  const pendingResidentId = pending?.resident_id;
-  const pendingApartment = pending?.apartment;
-  const pendingResidentName = pending?.resident_name;
   const pendingRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -187,22 +188,17 @@ export const FacialReleaseModal = () => {
                   <Building2 className="h-4 w-4 text-muted-foreground" />
                   <span className="font-medium">Apartamento / morador desta entrada</span>
                 </div>
-                <Select
+                <Combobox
+                  options={residents.map((resident) => ({
+                    value: resident.id,
+                    label: `${resident.apartment} — ${resident.name}`,
+                  }))}
                   value={selectedResidentId}
                   onValueChange={setSelectedResidentId}
-                  disabled={busy || residents.length === 0}
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder={residents.length === 0 ? 'Carregando moradores...' : 'Selecione o apartamento'} />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    {residents.map((resident) => (
-                      <SelectItem key={resident.id} value={resident.id}>
-                        {resident.apartment} — {resident.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder={residents.length === 0 ? 'Carregando moradores...' : 'Busque por apartamento ou nome'}
+                  emptyText="Nenhum morador encontrado."
+                  className="h-9"
+                />
                 {pending.apartment && (
                   <p className="flex items-center gap-1 text-xs text-muted-foreground">
                     <MapPin className="h-3 w-3" />

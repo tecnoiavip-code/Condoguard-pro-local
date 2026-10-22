@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS facial_release_requests (
   resident_id TEXT,
   resident_name TEXT,
   photo_url TEXT,
+  photo_entry_id TEXT,
   company TEXT,
   vehicle_plate TEXT,
   vehicle_model TEXT,
@@ -386,6 +387,9 @@ db.exec(SCHEMA);
 // visitantes, usada para diferenciar a primeira leitura (entrada) da saída.
 const accessEntryCols = new Set(db.prepare('PRAGMA table_info(access_entries)').all().map(c => c.name));
 if (!accessEntryCols.has('entry_scan_at')) db.exec('ALTER TABLE access_entries ADD COLUMN entry_scan_at TEXT');
+
+const facialReleaseCols = new Set(db.prepare('PRAGMA table_info(facial_release_requests)').all().map(c => c.name));
+if (!facialReleaseCols.has('photo_entry_id')) db.exec('ALTER TABLE facial_release_requests ADD COLUMN photo_entry_id TEXT');
 
 const residentCols = new Set(db.prepare('PRAGMA table_info(residents)').all().map(c => c.name));
 if (!residentCols.has('contract_type')) db.exec('ALTER TABLE residents ADD COLUMN contract_type TEXT');
@@ -486,3 +490,25 @@ export function parseSeedFile() {
   if (password) process.env.ADMIN_PASSWORD = password;
   if (name) process.env.ADMIN_NAME = name;
 }
+
+// Retenção mínima dos dados faciais: pedidos já resolvidos e descritores sem
+// atualização ficam por 30 dias. Fotos continuam em access_entries enquanto o
+// registro de acesso existir; o pedido não guarda uma segunda cópia em base64.
+export function runFacialRetention() {
+  try {
+    db.prepare(`
+      DELETE FROM facial_release_requests
+      WHERE status IN ('approved', 'denied', 'expired')
+        AND datetime(COALESCE(resolved_at, requested_at)) < datetime('now', '-30 days')
+    `).run();
+    db.prepare(`
+      DELETE FROM visitor_face_descriptors
+      WHERE datetime(updated_at) < datetime('now', '-30 days')
+    `).run();
+  } catch (err) {
+    console.error('[facial] Falha na retenção de dados:', err.message);
+  }
+}
+
+runFacialRetention();
+setInterval(runFacialRetention, 24 * 60 * 60 * 1000).unref?.();

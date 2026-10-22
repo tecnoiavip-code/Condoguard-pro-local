@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -121,7 +122,8 @@ function resolveEntryPhoto(photosDir, photoUrl) {
   if (raw.startsWith('data:')) {
     const base64 = raw.split(',')[1] || '';
     if (base64.length < 100) return null;
-    return { mtime: `data:${base64.length}`, path: null, load: () => Buffer.from(base64, 'base64') };
+    const digest = createHash('sha1').update(base64).digest('hex');
+    return { mtime: `data:${digest}`, path: null, load: () => Buffer.from(base64, 'base64') };
   }
   if (/^https?:/i.test(raw)) return null;
   const file = path.join(photosDir, 'entry-photos', raw.replace(/^\/+/, ''));

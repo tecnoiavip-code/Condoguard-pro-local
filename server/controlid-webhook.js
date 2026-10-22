@@ -246,6 +246,20 @@ const DECISION_TIMEOUT_MS = 2500;
 const normalizeName = (value) =>
   String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
+// O leitor grava o nome como "<apartamento> - <pessoa>". O apartamento pode ser
+// "101" ou "SALINAS 97", então não dá para assumir que começa com número.
+const splitDeviceUserName = (value) => {
+  const text = String(value ?? '').trim();
+  const match = text.match(/\s[-–—]\s/);
+  if (!match || match.index === undefined || match.index <= 0) {
+    return { apartment: '', name: text };
+  }
+  return {
+    apartment: text.slice(0, match.index).trim(),
+    name: text.slice(match.index + match[0].length).trim(),
+  };
+};
+
 const VISITOR_ACCESS_TYPES = ['visitor', 'service_provider', 'delivery'];
 const normalizeDocument = (value) =>
   String(value ?? '').toUpperCase().replace(/[^0-9A-Z]/g, '');
@@ -261,8 +275,13 @@ const visitorSubjectKey = (document, name) => {
   const normalizedName = normalizeName(name);
   return normalizedName ? `name:${normalizedName}` : null;
 };
+const storedPhotoUrl = (value) => {
+  const url = String(value || '');
+  return url.startsWith('data:') ? null : (url || null);
+};
 const visitorSubjectFromEntry = (row) => ({
   subjectKey: visitorSubjectKey(row.visitor_document, row.visitor_name),
+  entryId: row.id || null,
   name: row.visitor_name,
   document: row.visitor_document,
   visitorType: row.visitor_type,
@@ -277,11 +296,11 @@ const sameVisitorSubject = (entry, subject) => {
 // ou apenas o nome.
 const findVisitorSubject = (db, { registration, userName, userId }) => {
   const reg = normalizeDocument(registration);
-  const name = normalizeName(userName);
+  const name = normalizeName(splitDeviceUserName(userName).name);
   const uid = Number(userId) || 0;
   if (!reg && !name && !uid) return null;
 
-  const rows = db.prepare(`SELECT visitor_name, visitor_document, visitor_type, photo_url, entry_time
+  const rows = db.prepare(`SELECT id, visitor_name, visitor_document, visitor_type, photo_url, entry_time
     FROM access_entries
     WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
     ORDER BY entry_time DESC
@@ -325,20 +344,34 @@ const evaluateCentralAccess = async (db, payload) => {
     }
 
     if (!resident && userName) {
-      const m = userName.match(/^(\d+\w?)\s*[-–]\s*(.+)$/i);
-      if (m) {
-        const [, apt, n] = m;
+      const { apartment: apt, name: rawName } = splitDeviceUserName(userName);
+      if (apt && rawName) {
         const rows = db.prepare(
           'SELECT id, name, apartment, contract_type, contract_end_date, person_type FROM residents WHERE apartment LIKE ?'
-        ).all(`%${apt.trim()}%`);
-        const target = normalizeName(n);
-        // Só autoriza quando o NOME realmente corresponde. Não usar mais o
-        // atalho "rows.length === 1" — ele abria para o morador errado quando
-        // o nome do evento não batia com ninguém do apartamento.
-        resident = rows.find((r) => {
-          const rn = normalizeName(r.name);
-          return rn.includes(target) || target.includes(rn);
-        }) || null;
+        ).all(`%${apt}%`);
+        const target = normalizeName(rawName);
+        // Antes de aceitar qualquer morador por semelhança de nome, verifica se
+        // o documento/id do equipamento corresponde a um cadastro do Novo
+        // Cadastro. Isso evita liberar um visitante como morador só porque o
+        // nome bate parcialmente com o de alguém do apartamento.
+        const registeredVisitor = findVisitorSubject(db, {
+          registration: payload?.registration,
+          userId: payload?.user_id,
+        });
+        if (!registeredVisitor) {
+          const exact = rows.find((r) => normalizeName(r.name) === target);
+          if (exact) {
+            resident = exact;
+          } else {
+            const namedVisitor = findVisitorSubject(db, { userName });
+            if (!namedVisitor) {
+              resident = rows.find((r) => {
+                const rn = normalizeName(r.name);
+                return rn.includes(target) || target.includes(rn);
+              }) || null;
+            }
+          }
+        }
       }
     }
 
@@ -674,13 +707,15 @@ export function registerControlidWebhook(app, ctx) {
     }
 
     const requestId = genId();
-    const photoUrl = photoTemplate?.photo_url || subject.photoUrl || null;
+    const rawPhotoUrl = photoTemplate?.photo_url || subject.photoUrl || null;
+    const photoUrl = storedPhotoUrl(rawPhotoUrl);
+    const photoEntryId = photoUrl ? null : (photoTemplate?.id || subject.entryId || null);
     db.prepare(`INSERT INTO facial_release_requests (
         id, device_id, subject_key, visitor_name, visitor_document, visitor_type,
-        apartment, resident_id, resident_name, photo_url, company, vehicle_plate,
+        apartment, resident_id, resident_name, photo_url, photo_entry_id, company, vehicle_plate,
         vehicle_model, vehicle_color, purpose, badge_number, match_source, match_distance,
         status, requested_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       requestId,
       deviceId || null,
       subject.subjectKey,
@@ -691,6 +726,7 @@ export function registerControlidWebhook(app, ctx) {
       template?.resident_id || null,
       template?.resident_name || null,
       photoUrl,
+      photoEntryId,
       template?.company || null,
       template?.vehicle_plate || null,
       template?.vehicle_model || null,

@@ -247,6 +247,71 @@ describe('integração do backend local', () => {
     expect(named.actions[0].action).toBe('sec_box');
   });
 
+  it('Control iD webhook: reconhece morador de apartamento com nome', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_dec_salinas',
+          name: 'Carlos Salinas',
+          apartment: 'SALINAS 97',
+          contract_end_date: '2099-12-31',
+        },
+      }),
+    });
+
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 1, user_id: 57, user_name: 'SALINAS 97 - Carlos Salinas', portal_id: 1, device_id: 'cid-dec-1' }),
+    });
+    const data = await res.json();
+    expect(data.event).toBe(7);
+    expect(data.actions[0].action).toBe('sec_box');
+  });
+
+  it('Control iD webhook: cadastro do Novo Cadastro tem prioridade sobre nome parecido de morador', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_dec_colisao',
+          name: 'Joao Colisao',
+          apartment: '703',
+          contract_end_date: '2099-12-31',
+        },
+      }),
+    });
+    await api('/api/table/access_entries', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          visitor_name: 'Joao Col',
+          visitor_document: 'VIS-COLL-1',
+          apartment: '999',
+          visitor_type: 'visitor',
+          entry_time: '2026-01-01T10:00:00.000Z',
+          exit_time: '2026-01-01T11:00:00.000Z',
+        },
+      }),
+    });
+
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 1,
+        user_id: 58,
+        user_name: '703 - Joao Col',
+        registration: 'VIS-COLL-1',
+        portal_id: 1,
+        device_id: 'cid-dec-1',
+      }),
+    });
+    const data = await res.json();
+    expect(data.event).toBe(6);
+  });
+
   it('Control iD webhook: decisão central nega contrato vencido', async () => {
     await api('/api/table/residents', {
       method: 'POST',
@@ -386,6 +451,57 @@ describe('integração do backend local', () => {
     const rows = await api('/api/table/access_entries?select=id&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_morador_1' }])));
     expect(rows.error).toBeNull();
     expect(rows.data).toHaveLength(0);
+  });
+
+  it('libera��o facial: aprova��o exige apartamento e morador', async () => {
+    const semApto = await api('/api/table/facial_release_requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_fr_sem_apto',
+          subject_key: 'doc:SEMAPTO',
+          visitor_name: 'Sem Apartamento',
+          visitor_type: 'visitor',
+          status: 'pending',
+          requested_at: new Date().toISOString(),
+        },
+      }),
+    });
+    expect(semApto.error).toBeNull();
+
+    const semAptoRes = await fetch(`${base}/api/functions/facial-release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'approve', request_id: 'it_fr_sem_apto' }),
+    });
+    expect(semAptoRes.status).toBe(400);
+
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_fr_colab', name: 'Colaborador Facial', apartment: '803', person_type: 'colaborador' } }),
+    });
+    const comColab = await api('/api/table/facial_release_requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_fr_colab',
+          subject_key: 'doc:COLABFACIAL',
+          visitor_name: 'Visitante Colab',
+          visitor_type: 'visitor',
+          apartment: '803',
+          status: 'pending',
+          requested_at: new Date().toISOString(),
+        },
+      }),
+    });
+    expect(comColab.error).toBeNull();
+
+    const colabRes = await fetch(`${base}/api/functions/facial-release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'approve', request_id: 'it_fr_colab', resident_id: 'it_fr_colab' }),
+    });
+    expect(colabRes.status).toBe(400);
   });
 });
 

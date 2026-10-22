@@ -928,8 +928,21 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
       if (action === 'list') {
         const rows = db.prepare(`SELECT * FROM facial_release_requests
           WHERE status = 'pending' ORDER BY requested_at DESC LIMIT 20`).all();
+        const photoIds = [...new Set(rows
+          .filter((row) => !row.photo_url && row.photo_entry_id)
+          .map((row) => row.photo_entry_id))];
+        const entryPhotos = new Map();
+        if (photoIds.length) {
+          const placeholders = photoIds.map(() => '?').join(',');
+          db.prepare(`SELECT id, photo_url FROM access_entries WHERE id IN (${placeholders})`)
+            .all(...photoIds)
+            .forEach((entry) => entryPhotos.set(entry.id, entry.photo_url));
+        }
         return res.json({
-          requests: rows.map((row) => ({ ...row, photo_url: resolvePhotoUrl(row.photo_url) })),
+          requests: rows.map((row) => ({
+            ...row,
+            photo_url: resolvePhotoUrl(row.photo_url || entryPhotos.get(row.photo_entry_id) || null),
+          })),
         });
       }
 
@@ -981,9 +994,12 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
         let residentName = request.resident_name || null;
         let apartment = request.apartment || '';
         if (body.resident_id) {
-          const chosenResident = db.prepare('SELECT id, name, apartment FROM residents WHERE id = ?').get(body.resident_id);
+          const chosenResident = db.prepare('SELECT id, name, apartment, person_type FROM residents WHERE id = ?').get(body.resident_id);
           if (!chosenResident) {
             return res.status(400).json({ error: { message: 'Morador selecionado não encontrado' } });
+          }
+          if (chosenResident.person_type && chosenResident.person_type !== 'morador') {
+            return res.status(400).json({ error: { message: 'Selecione um morador para autorizar a entrada' } });
           }
           residentId = chosenResident.id;
           residentName = chosenResident.name;
@@ -992,6 +1008,19 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
           apartment = String(body.apartment);
           residentId = null;
           residentName = body.resident_name ? String(body.resident_name) : null;
+        }
+
+        if (!apartment) {
+          return res.status(400).json({ error: { message: 'Informe o apartamento desta entrada' } });
+        }
+        if (residentId && !body.resident_id) {
+          const linkedResident = db.prepare('SELECT person_type FROM residents WHERE id = ?').get(residentId);
+          if (!linkedResident) {
+            return res.status(400).json({ error: { message: 'Morador do pedido não encontrado; selecione um morador' } });
+          }
+          if (linkedResident.person_type && linkedResident.person_type !== 'morador') {
+            return res.status(400).json({ error: { message: 'O pedido está vinculado a um colaborador; selecione um morador' } });
+          }
         }
 
         const entryId = genId();
