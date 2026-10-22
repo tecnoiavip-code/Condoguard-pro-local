@@ -25,6 +25,7 @@ interface ResidentOption {
   id: string;
   name: string;
   apartment: string;
+  person_type?: string | null;
 }
 
 const formatTime = (value?: string | null) => {
@@ -75,10 +76,12 @@ export const FacialReleaseModal = () => {
     let cancelled = false;
     supabase
       .from('residents')
-      .select('id, name, apartment')
+      .select('id, name, apartment, person_type')
       .order('apartment', { ascending: true })
       .then(({ data }: { data: ResidentOption[] | null }) => {
-        if (!cancelled && data) setResidents(data);
+        if (!cancelled && data) {
+          setResidents(data.filter((resident) => (resident.person_type ?? 'morador') === 'morador'));
+        }
       });
     return () => {
       cancelled = true;
