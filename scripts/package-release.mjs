@@ -14,9 +14,11 @@ if (!existsSync(nsisDir)) {
   console.error('Pasta do instalador nao encontrada. Rode antes: npx tauri build');
   process.exit(1);
 }
-const setupFile = readdirSync(nsisDir).find((f) => f.endsWith('-setup.exe'));
+const setupFile = readdirSync(nsisDir).find(
+  (f) => f.includes(`_${version}_`) && f.endsWith('-setup.exe'),
+);
 if (!setupFile) {
-  console.error('Instalador -setup.exe nao encontrado em', nsisDir);
+  console.error(`Instalador da versao ${version} nao encontrado em`, nsisDir);
   process.exit(1);
 }
 

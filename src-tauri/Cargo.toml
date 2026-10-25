@@ -1,6 +1,6 @@
 [package]
 name = "portalguard-local"
-version = "2.0.0"
+version = "2.0.1"
 description = "PortalGuard Local - Instalável"
 authors = ["PortalGuard"]
 edition = "2021"
