@@ -107,7 +107,7 @@ export const Layout = ({ children }: LayoutProps) => {
               <div className="flex items-center space-x-3">
                 <Building2 className="h-12 w-12" />
                 <div>
-                  <h1 className="text-2xl md:text-3xl font-bold">CondoGuard Pro</h1>
+                  <h1 className="text-2xl md:text-3xl font-bold">PortalGuard Pro</h1>
                   <p className="text-primary-foreground/80 text-sm hidden md:block">
                     Sistema Profissional de Controle de Acesso
                   </p>
