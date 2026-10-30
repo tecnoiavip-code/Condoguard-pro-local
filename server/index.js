@@ -11,7 +11,7 @@ import {
   createUser, getUserByEmail, getUserById, getUserRoles,
   seedAdmin, parseSeedFile, DATA_DIR, PHOTOS_DIR,
 } from './db.js';
-import { registerControlidWebhook, buildWebhookConfig } from './controlid-webhook.js';
+import { registerControlidWebhook, buildWebhookConfig, isFacialDevice } from './controlid-webhook.js';
 import { createFaceEngine, getDeviceFrame } from './face-match.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -831,7 +831,7 @@ app.post('/api/functions/controlid-webhook/push-config', authMiddleware, (req, r
   const { device_id, deviceId } = req.body || {};
   const targetDeviceId = device_id || deviceId;
   if (!targetDeviceId) return res.status(400).json({ data: { error: 'device_id é obrigatório' }, error: null });
-  const fullConfig = buildWebhookConfig(req);
+  const fullConfig = buildWebhookConfig(req, { facial: isFacialDevice(db, targetDeviceId) });
   db.prepare('INSERT INTO push_command_queue (id, command, created_at, device_id, status) VALUES (?,?,?,?,?)')
     .run(genId(), JSON.stringify({ verb: 'POST', endpoint: 'set_configuration', body: fullConfig, contentType: 'application/json' }), now(), targetDeviceId, 'pending');
   db.prepare('INSERT INTO controlid_logs (id, device_id, event_type, payload, processed, received_at) VALUES (?,?,?,?,?,?)')

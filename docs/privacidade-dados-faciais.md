@@ -40,3 +40,5 @@ O titular pode solicitar confirmação de tratamento, acesso, correção, elimin
 
 - Fotos antigas em WebP podem não ser indexadas pelo motor facial; reenvie a foto em JPEG se o visitante não for reconhecido.
 - O reconhecimento facial é uma ajuda à portaria; a decisão final e a contingência continuam sob responsabilidade dos operadores e das regras de segurança do condomínio.
+- No iDFace, a liberação automática de morador usa a identificação local do equipamento, que tem prova de vida (RGB + IR). O servidor não abre o portão para morador a partir de um frame RGB isolado, porque esse caminho não tem prova de vida e aceita foto.
+- Mantenha a prova de vida do iDFace em modo rigoroso (`face_id.liveness_mode = "1"`) e os moradores sincronizados no equipamento. Sem isso, a abertura automática deixa de reconhecer o morador e a portaria precisa liberar manualmente.

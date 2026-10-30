@@ -50,13 +50,29 @@ async function api(path: string, init: RequestInit = {}): Promise<any> {
   return res.json();
 }
 
+// Mesmo algoritmo usado no cadastro (src/lib/device-capture.ts) e no webhook.
+function hardwareIdFor(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  return Math.abs(hash);
+}
+
 beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pg-itest-'));
   port = await getFreePort();
+  const httpsPort = await getFreePort();
   base = `http://127.0.0.1:${port}`;
 
   server = spawn(process.execPath, [serverEntry], {
-    env: { ...process.env, PORT: String(port), PGDATA_DIR: tmpDir },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      // O servidor também sobe HTTPS; usar uma porta livre evita conflito com
+      // uma instalação real do PortalGuard rodando na máquina de testes.
+      PORTALGUARD_HTTPS_PORT: String(httpsPort),
+      PGDATA_DIR: tmpDir,
+      PORTALGUARD_DEVICE_MIN_CONFIDENCE: '50',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -270,6 +286,52 @@ describe('integração do backend local', () => {
     expect(data.actions[0].action).toBe('sec_box');
   });
 
+  it('Control iD webhook: mapeia user_id do iDFace direto para o morador (sem depender do nome)', async () => {
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 1,
+        user_id: hardwareIdFor('it_dec_ativo'),
+        portal_id: 1,
+        device_id: 'cid-dec-1',
+      }),
+    });
+    const data = await res.json();
+    expect(data.event).toBe(7);
+    expect(data.actions[0].action).toBe('sec_box');
+  });
+
+  it('Control iD webhook: confiança abaixo do mínimo nega a liberação', async () => {
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 1,
+        user_id: hardwareIdFor('it_dec_ativo'),
+        confidence: 10,
+        portal_id: 1,
+        device_id: 'cid-dec-1',
+      }),
+    });
+    expect((await res.json()).event).toBe(6);
+  });
+
+  it('Control iD webhook: confiança acima do mínimo libera o morador', async () => {
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 1,
+        user_id: hardwareIdFor('it_dec_ativo'),
+        confidence: 80,
+        portal_id: 1,
+        device_id: 'cid-dec-1',
+      }),
+    });
+    expect((await res.json()).event).toBe(7);
+  });
+
   it('Control iD webhook: cadastro do Novo Cadastro tem prioridade sobre nome parecido de morador', async () => {
     await api('/api/table/residents', {
       method: 'POST',
@@ -334,6 +396,20 @@ describe('integração do backend local', () => {
     const data = await res.json();
     expect(data.event).toBe(6);
     expect(data.actions).toBeUndefined();
+  });
+
+  it('Control iD webhook: nega contrato vencido também pelo user_id do iDFace', async () => {
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 1,
+        user_id: hardwareIdFor('it_dec_vencido'),
+        portal_id: 1,
+        device_id: 'cid-dec-1',
+      }),
+    });
+    expect((await res.json()).event).toBe(6);
   });
 
   it('Control iD webhook: decisão central nega pessoa bloqueada', async () => {

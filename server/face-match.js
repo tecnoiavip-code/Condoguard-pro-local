@@ -19,10 +19,19 @@ const DEFAULT_THRESHOLD = Number(process.env.PORTALGUARD_FACE_THRESHOLD || 0.55)
 // Visitantes usam um limiar mais rígido: a saída de um visitante reconhecido
 // abre o relé, então um falso positivo não pode fechar uma visita em aberto.
 const VISITOR_THRESHOLD = Number(process.env.PORTALGUARD_VISITOR_FACE_THRESHOLD || 0.45);
+// Distância mínima entre o melhor e o segundo melhor candidato. Sem essa
+// margem, dois rostos parecidos (irmãos, fotos antigas, gêmeos) podem gerar
+// uma "vitória" por diferença ínfima e abrir o portão para a pessoa errada.
+const MATCH_MARGIN = Number(process.env.PORTALGUARD_FACE_MATCH_MARGIN || 0.05);
 const VISITOR_INDEX_LIMIT = Number(process.env.PORTALGUARD_VISITOR_FACE_LIMIT || 300);
 const DETECTOR_INPUT = Number(process.env.PORTALGUARD_FACE_DETECTOR_INPUT || 320);
 const DETECTOR_SCORE = Number(process.env.PORTALGUARD_FACE_DETECTOR_SCORE || 0.3);
 const DEVICE_TIMEOUT_MS = Number(process.env.PORTALGUARD_FACE_DEVICE_TIMEOUT || 4000);
+// Abrir uma sessão no leitor é uma ida e volta extra na rede. A câmera é
+// consultada a cada reconhecimento central, então reaproveitar a sessão deixa
+// a liberação perceptivelmente mais rápida sem alterar a comparação facial.
+// Em caso de sessão expirada, getDeviceFrame autentica de novo e tenta uma vez.
+const DEVICE_SESSION_TTL_MS = Number(process.env.PORTALGUARD_FACE_SESSION_TTL || 5 * 60 * 1000);
 const INDEX_REFRESH_MS = Number(process.env.PORTALGUARD_FACE_INDEX_REFRESH || 120000);
 
 const WASM_FILES = [
@@ -48,6 +57,8 @@ let wasm = null;
 let faceapi = null;
 let PNGLib = null;
 let jpeg = null;
+const deviceSessions = new Map(); // base URL -> { session, expiresAt }
+const pendingDeviceLogins = new Map(); // base URL -> Promise<string | null>
 
 function loadLibs() {
   if (libsPromise) return libsPromise;
@@ -169,22 +180,49 @@ async function computeDescriptor(buffer) {
   }
 }
 
-// Puxa um frame ao vivo da câmera do leitor Control iD (save_screenshot).
-// É o mesmo mecanismo usado na identificação central: não exige tocar no
-// equipamento. Exposto para o cadastro capturar a foto direto da câmera.
-export async function getDeviceFrame(address) {
-  const base = /^https?:\/\//i.test(address) ? address : `http://${address}`;
-  const loginResp = await fetch(`${base}/login.fcgi`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ login: 'admin', password: 'admin' }),
-    signal: AbortSignal.timeout(DEVICE_TIMEOUT_MS),
-  });
-  if (!loginResp.ok) return null;
-  const loginData = await loginResp.json();
-  const session = loginData?.session;
-  if (!session) return null;
+function deviceBaseUrl(address) {
+  return (/^https?:\/\//i.test(address) ? address : `http://${address}`).replace(/\/+$/, '');
+}
 
+function cachedDeviceSession(base) {
+  const cached = deviceSessions.get(base);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    deviceSessions.delete(base);
+    return null;
+  }
+  return cached.session;
+}
+
+async function loginToDevice(base, force = false) {
+  if (!force) {
+    const cached = cachedDeviceSession(base);
+    if (cached) return cached;
+  } else {
+    deviceSessions.delete(base);
+  }
+
+  const pending = pendingDeviceLogins.get(base);
+  if (pending) return pending;
+
+  const login = (async () => {
+    const loginResp = await fetch(`${base}/login.fcgi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ login: 'admin', password: 'admin' }),
+      signal: AbortSignal.timeout(DEVICE_TIMEOUT_MS),
+    });
+    if (!loginResp.ok) return null;
+    const loginData = await loginResp.json();
+    const session = loginData?.session;
+    if (!session) return null;
+    deviceSessions.set(base, { session, expiresAt: Date.now() + DEVICE_SESSION_TTL_MS });
+    return session;
+  })().finally(() => pendingDeviceLogins.delete(base));
+  pendingDeviceLogins.set(base, login);
+  return login;
+}
+
+async function requestDeviceFrame(base, session) {
   const shotResp = await fetch(`${base}/save_screenshot.fcgi?session=${session}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -206,6 +244,25 @@ export async function getDeviceFrame(address) {
     return null;
   }
   return ab.length > 0 ? ab : null;
+}
+
+// Puxa um frame ao vivo da câmera do leitor Control iD (save_screenshot).
+// É o mesmo mecanismo usado na identificação central: não exige tocar no
+// equipamento. Exposto para o cadastro capturar a foto direto da câmera.
+export async function getDeviceFrame(address) {
+  const base = deviceBaseUrl(address);
+  const cachedSession = cachedDeviceSession(base);
+  let session = cachedSession || await loginToDevice(base);
+  if (!session) return null;
+
+  let frame = await requestDeviceFrame(base, session);
+  if (frame || !cachedSession) return frame;
+
+  // A sessão pode ter sido encerrada pelo leitor antes do nosso TTL. Refaz a
+  // autenticação somente nessa situação, preservando a latência normal.
+  session = await loginToDevice(base, true);
+  if (!session) return null;
+  return requestDeviceFrame(base, session);
 }
 
 export function createFaceEngine({ db, photosDir, logger = console }) {
@@ -402,18 +459,33 @@ export function createFaceEngine({ db, photosDir, logger = console }) {
     if (!detection) return { matched: false, reason: 'rosto_nao_detectado' };
 
     let bestResident = null;
+    let secondResident = null;
     for (const [residentId, info] of cache) {
       const distance = faceapi.euclideanDistance(detection.descriptor, info.descriptor);
       if (!bestResident || distance < bestResident.distance) {
+        secondResident = bestResident;
         bestResident = { residentId, name: info.name, apartment: info.apartment, distance };
+      } else if (!secondResident || distance < secondResident.distance) {
+        secondResident = { residentId, name: info.name, apartment: info.apartment, distance };
       }
     }
 
     let bestVisitor = null;
+    let secondVisitor = null;
     for (const [subjectKey, info] of visitorCache) {
       const distance = faceapi.euclideanDistance(detection.descriptor, info.descriptor);
       if (!bestVisitor || distance < bestVisitor.distance) {
+        secondVisitor = bestVisitor;
         bestVisitor = {
+          subjectKey,
+          name: info.name,
+          document: info.document,
+          visitorType: info.visitorType,
+          photoUrl: info.photoUrl,
+          distance,
+        };
+      } else if (!secondVisitor || distance < secondVisitor.distance) {
+        secondVisitor = {
           subjectKey,
           name: info.name,
           document: info.document,
@@ -424,8 +496,18 @@ export function createFaceEngine({ db, photosDir, logger = console }) {
       }
     }
 
-    const residentMatched = !!bestResident && bestResident.distance <= threshold;
-    const visitorMatched = !!bestVisitor && bestVisitor.distance <= VISITOR_THRESHOLD;
+    // Um candidato só é aceito se estiver dentro do limiar E suficientemente
+    // distante do segundo colocado. Isso evita falso positivo quando o rosto
+    // é parecido com mais de uma pessoa cadastrada.
+    const residentClear = !!bestResident
+      && (!secondResident || secondResident.distance - bestResident.distance >= MATCH_MARGIN);
+    const visitorClear = !!bestVisitor
+      && (!secondVisitor || secondVisitor.distance - bestVisitor.distance >= MATCH_MARGIN);
+
+    const residentMatched = residentClear && bestResident.distance <= threshold;
+    const visitorMatched = visitorClear && bestVisitor.distance <= VISITOR_THRESHOLD;
+    const ambiguous = (!residentMatched && !!bestResident && bestResident.distance <= threshold)
+      || (!visitorMatched && !!bestVisitor && bestVisitor.distance <= VISITOR_THRESHOLD);
 
     if (residentMatched && (!visitorMatched || bestResident.distance <= bestVisitor.distance)) {
       return {
@@ -435,6 +517,7 @@ export function createFaceEngine({ db, photosDir, logger = console }) {
         name: bestResident.name,
         apartment: bestResident.apartment,
         distance: bestResident.distance,
+        second_distance: secondResident?.distance ?? null,
       };
     }
     if (visitorMatched) {
@@ -447,9 +530,15 @@ export function createFaceEngine({ db, photosDir, logger = console }) {
         visitorType: bestVisitor.visitorType,
         photoUrl: bestVisitor.photoUrl,
         distance: bestVisitor.distance,
+        second_distance: secondVisitor?.distance ?? null,
       };
     }
-    return { matched: false, reason: 'abaixo_do_limiar', best: bestResident || bestVisitor };
+    return {
+      matched: false,
+      reason: ambiguous ? 'ambiguo' : 'abaixo_do_limiar',
+      best: bestResident || bestVisitor,
+      second: bestResident ? (secondResident || null) : (secondVisitor || null),
+    };
   }
 
   async function identifyFromDevice(address, threshold = DEFAULT_THRESHOLD) {

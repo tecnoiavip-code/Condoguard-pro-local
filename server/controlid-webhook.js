@@ -116,9 +116,9 @@ function parseHost(req) {
   return { host, port };
 }
 
-export function buildWebhookConfig(req) {
+export function buildWebhookConfig(req, { facial = false } = {}) {
   const { host, port } = parseHost(req);
-  return {
+  const config = {
     monitor: {
       request_timeout: '15000',
       hostname: host,
@@ -132,6 +132,35 @@ export function buildWebhookConfig(req) {
     },
     general: { online: '1', local_identification: '1', ihm_enterprise_mode: '0' },
   };
+
+  // iDFace: prova de vida rigorosa. O equipamento tem câmera RGB + IR e é ele
+  // quem deve decidir a identificação facial; o servidor não pode "salvar" uma
+  // foto aceitando um frame RGB isolado.
+  if (facial) {
+    config.face_id = {
+      liveness_mode: process.env.CONTROLID_LIVENESS_MODE || '1',
+      limit_identification_to_display_region: process.env.CONTROLID_LIMIT_FACE_REGION || '1',
+    };
+    config.identifier = { face_identification_enabled: '1' };
+    // Knob opcional: valores maiores reduzem falso aceite e aumentam falso
+    // rejeite. O padrão de fábrica é 12300; teste 12800-13200 por alguns dias.
+    const similarity = String(process.env.CONTROLID_FACE_SIMILARITY_THRESHOLD || '').trim();
+    if (similarity) config.bio_id = { similarity_threshold_1ton: similarity };
+  }
+
+  return config;
+}
+
+export function isFacialDevice(db, deviceId) {
+  if (!db || !deviceId) return false;
+  try {
+    const row = db.prepare(
+      'SELECT type FROM devices WHERE serial_number = ? OR ip_address = ? OR id = ? LIMIT 1',
+    ).get(deviceId, deviceId, deviceId);
+    return row?.type === 'facial_recognition';
+  } catch {
+    return false;
+  }
 }
 
 function detectEventType(urlPath, payload) {
@@ -224,9 +253,12 @@ function buildIdentificationResponse(payload, urlPath, deviceType, decision) {
 
   const result = {
     event: 7,
-    user_id: Number.isFinite(resolvedUserId) && resolvedUserId > 0
-      ? resolvedUserId
-      : (Number.isFinite(userId) ? userId : 0),
+    // Se o equipamento já mandou um user_id (identificação local), devolve o
+    // mesmo id para não trocar o usuário exibido. Só usa o id resolvido pelo
+    // servidor quando o evento veio sem user_id (ex.: identificação central).
+    user_id: Number.isFinite(userId) && userId > 0
+      ? userId
+      : (Number.isFinite(resolvedUserId) ? resolvedUserId : 0),
     user_name: residentName || userName,
     user_image: payload?.user_has_image === 1 || payload?.user_has_image === '1'
       || payload?.user_has_image === true || payload?.user_has_image === 'true',
@@ -241,7 +273,7 @@ function buildIdentificationResponse(payload, urlPath, deviceType, decision) {
 // ============= CENTRAL ACCESS DECISION ENGINE =============
 // The database is the judge. If the DB doesn't answer within the budget, we
 // fall back to the device decision (hybrid contingency) so the gate never hangs.
-const DECISION_TIMEOUT_MS = 2500;
+const DECISION_TIMEOUT_MS = 1500; // Reduzido para acelerar liberação facial (era 2500ms)
 
 const normalizeName = (value) =>
   String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
@@ -268,6 +300,22 @@ const hardwareIdFor = (value) => {
   const str = String(value ?? '');
   for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
   return Math.abs(hash);
+};
+
+// O cadastro grava o morador no iDFace com id = |hashCode(resident.id)|.
+// Mapear o user_id devolvido pelo equipamento direto para o morador evita
+// depender do nome (homônimos, nome editado, acento) e é mais preciso.
+const findResidentByDeviceUserId = (db, deviceUserId) => {
+  const uid = Number(deviceUserId) || 0;
+  if (!uid) return null;
+  try {
+    const rows = db.prepare(
+      'SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents',
+    ).all();
+    return rows.find((row) => hardwareIdFor(row.id) === uid) || null;
+  } catch {
+    return null;
+  }
 };
 const visitorSubjectKey = (document, name) => {
   const doc = normalizeDocument(document);
@@ -330,6 +378,7 @@ const evaluateCentralAccess = async (db, payload) => {
     const rawCardValue = String(payload?.card_value ?? '');
     const cardValue = sanitizeString(rawCardValue, 100).replace(/^0+/, '');
     const userName = sanitizeString(payload?.user_name || payload?.name || '', 200);
+    const deviceUserId = Number.parseInt(String(payload?.user_id ?? '0'), 10) || 0;
     let resident = null;
 
     // TAG: consulta os DOIS formatos (com e sem zeros à esquerda), pois o
@@ -341,6 +390,12 @@ const evaluateCentralAccess = async (db, payload) => {
       resident = db.prepare(
         `SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents WHERE vehicle_tag IN (${placeholders}) LIMIT 1`
       ).get(...candidates) || null;
+    }
+
+    // Identificação local do iDFace (com prova de vida): o user_id é o hash do
+    // UUID do morador. É a via mais precisa e não depende do nome enviado.
+    if (!resident && deviceUserId > 0) {
+      resident = findResidentByDeviceUserId(db, deviceUserId);
     }
 
     if (!resident && userName) {
@@ -385,7 +440,8 @@ const evaluateCentralAccess = async (db, payload) => {
         resident: resident.name,
         resident_name: resident.name,
         resident_id: resident.id,
-        resolved_user_id: resident.id,
+        // ID numérico que o iDFace usa para esse morador (não o UUID interno).
+        resolved_user_id: hardwareIdFor(resident.id),
         person_type: resident.person_type || 'morador',
         apartment: resident.apartment || null,
       };
@@ -411,7 +467,7 @@ const evaluateCentralAccess = async (db, payload) => {
     }
 
     if (incomingEvent === 3 || incomingEvent === 6) {
-      return { allow: false, reason: 'Não identificado', source: 'db' };
+      return { allow: false, reason: 'Não identificado', source: 'db', not_identified: true };
     }
 
     // O equipamento identificou alguém que não é morador: pode ser um cadastro
@@ -526,6 +582,15 @@ function withTimeout(promise, ms, fallback) {
 export function registerControlidWebhook(app, ctx) {
   const { db, now, genId, notifyRealtime, PHOTOS_DIR, faceEngine = null } = ctx;
   const FACE_TIMEOUT_MS = Number(process.env.PORTALGUARD_FACE_TIMEOUT_MS || 6000);
+  // O iDFace já identifica localmente com prova de vida (RGB + IR). O frame
+  // RGB que o servidor puxa em uma falha de identificação não tem prova de
+  // vida e aceita foto; por isso ele NÃO abre o portão para morador por
+  // padrão. Quem está cadastrado no equipamento continua abrindo automático.
+  const FACE_CENTRAL_RESIDENT_AUTO_OPEN =
+    process.env.PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN === '1';
+  // Confiança mínima informada pelo equipamento (campo `confidence` do evento
+  // new_user_identified). 0 desliga a checagem; calibrar com leituras reais.
+  const DEVICE_MIN_CONFIDENCE = Number(process.env.PORTALGUARD_DEVICE_MIN_CONFIDENCE || 0);
 
   // Descobre o endereço (ip:porta) do leitor para puxar o frame da câmera.
   function resolveDeviceAddress(deviceId) {
@@ -1068,7 +1133,7 @@ export function registerControlidWebhook(app, ctx) {
               if (!lastCfg) {
                 const pendingCfg = db.prepare("SELECT id FROM push_command_queue WHERE device_id = ? AND status IN ('pending','executing') AND json_extract(command, '$.endpoint') = 'set_configuration' LIMIT 1").get(deviceId);
                 if (!pendingCfg) {
-                  insertPushCommand(deviceId, { verb: 'POST', endpoint: 'set_configuration', body: buildWebhookConfig(req), contentType: 'application/json' });
+                  insertPushCommand(deviceId, { verb: 'POST', endpoint: 'set_configuration', body: buildWebhookConfig(req, { facial: isFacialDevice(db, deviceId) }), contentType: 'application/json' });
                   console.log('Auto-queued config refresh for device:', deviceId);
                 }
               }
@@ -1119,7 +1184,7 @@ export function registerControlidWebhook(app, ctx) {
         }
 
         console.log('Sending monitor config to device:', targetIp);
-        const fullConfig = buildWebhookConfig(req);
+        const fullConfig = buildWebhookConfig(req, { facial: isFacialDevice(db, targetSerial || targetIp) });
 
         try {
           const loginUrl = `http://${targetIp}:${targetPort}/login.fcgi`;
@@ -1196,7 +1261,7 @@ export function registerControlidWebhook(app, ctx) {
           return;
         }
 
-        const fullConfig = buildWebhookConfig(req);
+        const fullConfig = buildWebhookConfig(req, { facial: isFacialDevice(db, targetDeviceId) });
         const command = { verb: 'POST', endpoint: 'set_configuration', body: fullConfig, contentType: 'application/json' };
 
         try {
@@ -1262,15 +1327,22 @@ export function registerControlidWebhook(app, ctx) {
           evaluateCentralAccess(db, payload),
         ]);
 
-        // ===== IDENTIFICAÇÃO CENTRALIZADA POR ROSTO =====
-        // Quando o equipamento detecta um rosto mas não identifica a pessoa
-        // (event sem TAG e sem nome), o PortalGuard puxa o frame da câmera do
-        // leitor e casa o rosto contra as fotos dos moradores. A decisão do
-        // banco continua sendo a juíza; o rosto só ENTRA quando não há nada.
+        // ===== IDENTIFICAÇÃO CENTRALIZADA POR ROSTO (somente visitantes) =====
+        // O iDFace identifica localmente com prova de vida (RGB + IR). Quando
+        // ele manda event 3, significa que NÃO identificou — muitas vezes
+        // porque a prova de vida rejeitou uma foto. O frame RGB que puxamos
+        // aqui não tem prova de vida, então não pode reverter essa rejeição e
+        // abrir o portão para um morador. Visitantes continuam sendo
+        // reconhecidos para gerar o pedido de liberação à portaria.
         const rawCard = String(payload?.card_value ?? '');
         const hasCard = rawCard.replace(/^0+/, '') !== '';
         const deviceUserId = Number.parseInt(String(payload?.user_id ?? '0'), 10) || 0;
         const deviceEvent = Number.parseInt(String(payload?.event ?? '0'), 10) || 0;
+        const rawConfidence = String(payload?.confidence ?? '').trim();
+        // Aceita inteiro ou decimal; a escala do iDFace deve ser calibrada
+        // com leituras reais antes de ligar PORTALGUARD_DEVICE_MIN_CONFIDENCE.
+        const parsedConfidence = rawConfidence === '' ? NaN : Number(rawConfidence);
+        const deviceConfidence = Number.isFinite(parsedConfidence) ? parsedConfidence : null;
         // O equipamento NUNCA identificou positivamente (user_id sempre 0 nos
         // eventos reais). Só pulamos o rosto quando há TAG ou quando o próprio
         // equipamento concedeu (event 7). Um nome vindo do equipamento sem
@@ -1280,7 +1352,31 @@ export function registerControlidWebhook(app, ctx) {
         let finalDecision = decision;
         let faceResult = null;
 
-        if (faceEngine && unidentified && !decision.allow && decision.source === 'db') {
+        // Precisão: se o equipamento informou a confiança da identificação e
+        // ela está abaixo do mínimo configurado, não libera. Sem o campo
+        // (firmwares antigos/push), a checagem fica desligada.
+        const confidenceDenied = DEVICE_MIN_CONFIDENCE > 0
+          && Number.isFinite(deviceConfidence)
+          && deviceConfidence < DEVICE_MIN_CONFIDENCE;
+        if (confidenceDenied) {
+          finalDecision = {
+            allow: false,
+            source: 'db',
+            reason: `Confiança facial ${deviceConfidence} abaixo do mínimo ${DEVICE_MIN_CONFIDENCE}`,
+            not_identified: true,
+          };
+        }
+
+        const shouldTryCentralFace = faceEngine
+          && unidentified
+          && !confidenceDenied
+          && !decision.allow
+          && decision.source === 'db'
+          // Só quando o banco não identificou ninguém. Nunca quando já existe
+          // uma negativa positiva (contrato vencido, pessoa bloqueada etc.).
+          && decision.not_identified;
+
+        if (shouldTryCentralFace) {
           const deviceAddress = resolveDeviceAddress(effectiveDeviceId);
           if (deviceAddress) {
             try {
@@ -1294,18 +1390,34 @@ export function registerControlidWebhook(app, ctx) {
             }
             console.log('Face identification:', { device_id: effectiveDeviceId, address: deviceAddress, ...faceResult });
             // Visitante reconhecido NÃO abre direto: passa pela regra de uso
-            // único (saída ou liberação da portaria). Só morador abre aqui.
+            // único (saída ou liberação da portaria).
+            // Morador reconhecido só no servidor (frame RGB, sem prova de
+            // vida) NÃO abre por padrão: mantém a decisão do iDFace existente.
             if (faceResult?.matched && faceResult.kind !== 'visitor') {
-              finalDecision = {
-                allow: true,
-                source: 'face',
-                reason: `Rosto reconhecido: ${faceResult.name}`,
-                resident: faceResult.name,
-                resident_name: faceResult.name,
-                resident_id: faceResult.residentId,
-                resolved_user_id: faceResult.residentId,
-                face_distance: faceResult.distance,
-              };
+              if (FACE_CENTRAL_RESIDENT_AUTO_OPEN) {
+                finalDecision = {
+                  allow: true,
+                  source: 'face',
+                  reason: `Rosto reconhecido: ${faceResult.name}`,
+                  resident: faceResult.name,
+                  resident_name: faceResult.name,
+                  resident_id: faceResult.residentId,
+                  resolved_user_id: hardwareIdFor(faceResult.residentId),
+                  face_distance: faceResult.distance,
+                };
+              } else {
+                finalDecision = {
+                  allow: false,
+                  source: 'face',
+                  reason: 'Rosto reconhecido apenas no servidor (sem prova de vida)',
+                  resident: faceResult.name,
+                  resident_name: faceResult.name,
+                  resident_id: faceResult.residentId,
+                  resolved_user_id: hardwareIdFor(faceResult.residentId),
+                  face_distance: faceResult.distance,
+                  not_identified: true,
+                };
+              }
             }
           } else {
             console.warn('Face identification: endereço do dispositivo não encontrado', effectiveDeviceId);
@@ -1344,7 +1456,11 @@ export function registerControlidWebhook(app, ctx) {
         const identResponse = allowByDb
           ? buildIdentificationResponse(payload, urlPath, deviceType, finalDecision)
           : buildDeniedResponse(payload, urlPath);
-        console.log('Central access decision:', { device_id: effectiveDeviceId, ...finalDecision });
+        console.log('Central access decision:', {
+          device_id: effectiveDeviceId,
+          confidence: Number.isFinite(deviceConfidence) ? deviceConfidence : null,
+          ...finalDecision,
+        });
         console.log('Identification response (immediate):', {
           device_id: effectiveDeviceId,
           device_type: deviceType,
@@ -1360,11 +1476,13 @@ export function registerControlidWebhook(app, ctx) {
             // visualização da portaria (nome + horário). As fotos eram o que
             // mais ocupava espaço em disco.
             const extra = {};
+            if (Number.isFinite(deviceConfidence)) extra.device_confidence = deviceConfidence;
             if (faceResult) {
               extra.face_identification = {
                 matched: !!faceResult.matched,
                 reason: faceResult.reason || null,
                 distance: faceResult.distance ?? null,
+                second_distance: faceResult.second_distance ?? null,
                 resident_id: faceResult.residentId || null,
                 resident_name: (finalDecision?.source === 'face' && finalDecision.resident_name) || faceResult.name || null,
               };

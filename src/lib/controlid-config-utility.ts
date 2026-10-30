@@ -46,6 +46,7 @@ pre{background:#000;padding:12px;border-radius:6px;white-space:pre-wrap;font-siz
 <label>IPs dos equipamentos (um por linha)</label><textarea id="ips" rows="4">${ips.join('\n')}</textarea>
 <label>Usuário</label><input id="u" value="admin"><label>Senha</label><input id="p" type="password" value="admin">
 <label><input type="checkbox" id="rb" checked style="width:auto"> Reiniciar após gravar</label>
+<label><input type="checkbox" id="lv" checked style="width:auto"> Exigir prova de vida rigorosa no iDFace (recomendado)</label>
 <button onclick="run()">Aplicar configuração</button><pre id="log"></pre>
 <script>
 const WEBHOOK_PATH=${JSON.stringify(WEBHOOK_PATH)};
@@ -53,7 +54,7 @@ const NAMES=${JSON.stringify(names)};
 const log=m=>{document.getElementById('log').textContent+=m+'\\n'};
 function serverHost(){return document.getElementById('srv').value.trim().replace(/^https?:\\/\\//i,'').replace(/\\/.*$/,'')}
 function splitHost(v){const b=v.match(/^\\[([^\\]]+)\\](?::(\\d+))?$/);if(b)return[b[1],b[2]||'8080'];const i=v.lastIndexOf(':');if(i>-1&&/^\\d+$/.test(v.slice(i+1)))return[v.slice(0,i),v.slice(i+1)];return[v,'8080']}
-function makeConfig(){const parts=splitHost(serverHost());const hostname=parts[0];const port=String(parts[1]);const url='http://'+hostname+':'+port+WEBHOOK_PATH;return{url,host:hostname,port,config:{monitor:{request_timeout:'15000',hostname,port,path:WEBHOOK_PATH},push_server:{push_remote_address:url,push_request_timeout:'15000',push_request_period:'5'},general:{online:'1',local_identification:'1'}}}}
+function makeConfig(){const parts=splitHost(serverHost());const hostname=parts[0];const port=String(parts[1]);const url='http://'+hostname+':'+port+WEBHOOK_PATH;const config={monitor:{request_timeout:'15000',hostname,port,path:WEBHOOK_PATH},push_server:{push_remote_address:url,push_request_timeout:'15000',push_request_period:'5'},general:{online:'1',local_identification:'1'}};if(document.getElementById('lv').checked){config.face_id={liveness_mode:'1',limit_identification_to_display_region:'1'};config.identifier={face_identification_enabled:'1'}}return{url,host:hostname,port,config}}
 async function post(ip,path,body){const r=await fetch('http://'+ip+'/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});const t=await r.text();if(!r.ok)throw new Error(path+' HTTP '+r.status+' '+t);try{return JSON.parse(t)}catch{return {}}}
 async function ensureOnlineServer(ip,s,baseUrl){
 const SRV='PortalGuard Servidor';

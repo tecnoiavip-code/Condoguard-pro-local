@@ -112,9 +112,26 @@ A liberação passa a ser decidida pelo banco — morador ativo, contrato em dia
 de bloqueados — com fallback para a decisão do próprio equipamento se o banco não
 responder em até 2,5 s, para que o portão nunca fique travado.
 
+### iDFace e prova de vida
+
+O iDFace tem câmera RGB + IR e prova de vida própria. O configurador grava
+`face_id.liveness_mode = "1"` (modo rigoroso) no equipamento. **Mantenha os
+moradores sincronizados no iDFace**: a abertura automática do morador acontece
+pela identificação local do equipamento, que tem prova de vida.
+
+Quando o iDFace manda `event 3` (não identificou), o servidor **não** abre o
+portão para morador a partir do frame RGB isolado — esse frame não tem prova de
+vida e aceita foto. Visitantes reconhecidos nesse caminho continuam gerando
+pedido de liberação para a portaria.
+
 | Variável | Efeito |
 | -------- | ------ |
 | `VITE_CONTROLID_HOST` | `ip:porta` gravado no configurador. Padrão: o endereço usado no navegador, ou `127.0.0.1:8080`. |
 | `CONTROLID_AUTO_REFRESH` | `1` reativa o reenvio periódico da configuração. Desativado por padrão, porque o configurador já grava no flash e o reenvio sobrescreve. |
+| `CONTROLID_LIVENESS_MODE` | `1` (padrão) grava prova de vida rigorosa no iDFace; `0` usa o modo normal de fábrica. |
+| `CONTROLID_FACE_SIMILARITY_THRESHOLD` | Opcional. Grava `bio_id.similarity_threshold_1ton` (padrão de fábrica `12300`). Teste `12800`–`13200` para reduzir falso aceite. |
+| `PORTALGUARD_DEVICE_MIN_CONFIDENCE` | Opcional. Confiança mínima do `confidence` enviado pelo iDFace para liberar. `0` desliga. Calibre com leituras reais antes de ativar. |
+| `PORTALGUARD_FACE_MATCH_MARGIN` | Margem mínima entre o melhor e o segundo candidato no motor central (padrão `0.05`). |
+| `PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN` | `1` volta a permitir que o motor central abra para morador usando apenas o frame RGB. **Não recomendado**: remove a prova de vida do caminho. |
 
 # Condoguard-pro-local
