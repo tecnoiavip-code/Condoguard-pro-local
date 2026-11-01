@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Settings as SettingsIcon, Trash2, Download, Upload, Send, FileText, FileSpreadsheet, Lock, BarChart3 } from 'lucide-react';
+import { Settings as SettingsIcon, Trash2, Download, Upload, Send, FileText, FileSpreadsheet, Lock, BarChart3, Smartphone } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { supabaseStorage } from '@/lib/supabase-storage';
 import { useResidents } from '@/hooks/useResidents';
@@ -24,6 +24,7 @@ import {
 } from '@/lib/import-files';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ExecutiveDashboard } from '@/components/reports/ExecutiveDashboard';
+import { Devices } from './Devices';
 import { exportExecutiveReport, type EquipmentCheckRow } from '@/lib/executive-pdf-export';
 import {
   computeExecutiveMetrics,
@@ -72,7 +73,7 @@ export const Settings = () => {
   const [passwordError, setPasswordError] = useState(false);
 
   // ========== PAINEL EXECUTIVO (BI) ==========
-  const [settingsTab, setSettingsTab] = useState<'geral' | 'executive'>('geral');
+  const [settingsTab, setSettingsTab] = useState<'geral' | 'executive' | 'dispositivos'>('geral');
   const [executivePeriod, setExecutivePeriod] = useState<ExecutivePeriod>('30d');
   const [executiveFrom, setExecutiveFrom] = useState('');
   const [executiveTo, setExecutiveTo] = useState('');
@@ -658,7 +659,13 @@ export const Settings = () => {
           <BarChart3 className="mr-2 h-4 w-4" />
           Painel Executivo (BI)
         </Button>
+        <Button variant={settingsTab === 'dispositivos' ? 'default' : 'ghost'} onClick={() => setSettingsTab('dispositivos')}>
+          <Smartphone className="mr-2 h-4 w-4" />
+          Dispositivos
+        </Button>
       </div>
+
+      {settingsTab === 'dispositivos' && <Devices />}
 
       {settingsTab === 'executive' && (
         <div className="space-y-6">

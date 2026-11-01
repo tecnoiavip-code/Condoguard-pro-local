@@ -302,6 +302,17 @@ const hardwareIdFor = (value) => {
   return Math.abs(hash);
 };
 
+// O motor do PortalGuard é a ÚNICA autoridade de liberação. O equipamento
+// identifica (com prova de vida, no iDFace) e pergunta; quem concede ou nega é
+// o servidor, com as regras do banco. Por padrão, um usuário que existe apenas
+// no equipamento NÃO é liberado (antes ele abria o portão sem passar pelo
+// motor). Para voltar ao comportamento antigo: PORTALGUARD_ALLOW_DEVICE_LOCAL_USERS=1.
+const ALLOW_DEVICE_LOCAL_USERS =
+  process.env.PORTALGUARD_ALLOW_DEVICE_LOCAL_USERS === '1';
+// Se o banco não responder dentro do tempo, negar é o padrão (o motor decide).
+// PORTALGUARD_ACCESS_FAIL_OPEN=1 restaura a liberação de emergência.
+const ACCESS_FAIL_OPEN = process.env.PORTALGUARD_ACCESS_FAIL_OPEN === '1';
+
 // O cadastro grava o morador no iDFace com id = |hashCode(resident.id)|.
 // Mapear o user_id devolvido pelo equipamento direto para o morador evita
 // depender do nome (homônimos, nome editado, acento) e é mais preciso.
@@ -482,18 +493,37 @@ const evaluateCentralAccess = async (db, payload) => {
       return { allow: false, reason: 'Visitante reconhecido', source: 'db', visitor_subject: visitorSubject };
     }
 
-    // Known by the device (staff, service providers registered locally): allow.
-    return { allow: true, reason: 'Cadastro no equipamento', source: 'db' };
+    // Known by the device (staff, service providers registered locally).
+    // O motor do PortalGuard não delega essa decisão ao equipamento: sem
+    // cadastro/regra no banco, nega e a portaria libera manualmente.
+    if (ALLOW_DEVICE_LOCAL_USERS) {
+      return { allow: true, reason: 'Cadastro no equipamento', source: 'db' };
+    }
+    return {
+      allow: false,
+      reason: 'Usuário não cadastrado no PortalGuard',
+      source: 'db',
+      unknown_device_user: true,
+    };
   })();
 
   const timeout = new Promise((resolve) =>
-    setTimeout(() => resolve({ allow: true, reason: 'Timeout - decisão do equipamento', source: 'fallback' }), DECISION_TIMEOUT_MS)
+    setTimeout(
+      () => resolve(
+        ACCESS_FAIL_OPEN
+          ? { allow: true, reason: 'Timeout - liberação de emergência', source: 'fallback' }
+          : { allow: false, reason: 'Motor indisponível (timeout)', source: 'fallback' },
+      ),
+      DECISION_TIMEOUT_MS,
+    )
   );
   try {
     return await Promise.race([work, timeout]);
   } catch (e) {
     console.error('Central decision error:', e);
-    return { allow: true, reason: 'Erro - decisão do equipamento', source: 'fallback' };
+    return ACCESS_FAIL_OPEN
+      ? { allow: true, reason: 'Erro - liberação de emergência', source: 'fallback' }
+      : { allow: false, reason: 'Erro no motor de decisão', source: 'fallback' };
   }
 };
 
@@ -1106,12 +1136,17 @@ export function registerControlidWebhook(app, ctx) {
 
           const cmd = parseStoredCommand(pendingCmd.command);
           const endpoint = String(cmd.endpoint || '').replace(/\.fcgi$/i, '');
+          // `queryString` é um campo do protocolo Push. Antes, os comandos de
+          // imagem embutiam a query no endpoint (ex.: user_set_image?user_id=1)
+          // e o equipamento não reconhecia a rota — os moradores eram criados
+          // sem foto e o iDFace nunca identificava ninguém.
           const pushCommand = {
             verb: cmd.verb || 'POST',
             endpoint,
             body: cmd.body ?? {},
             contentType: cmd.contentType || 'application/json',
           };
+          if (cmd.queryString) pushCommand.queryString = String(cmd.queryString);
 
           console.log('Sending push command to device:', deviceId, JSON.stringify(pushCommand).substring(0, 200));
           res.set(corsHeaders).status(200).json(pushCommand);
@@ -1450,9 +1485,10 @@ export function registerControlidWebhook(app, ctx) {
           }
         }
 
-        const deviceGranted = Number.parseInt(String(payload?.event ?? '0'), 10) === 7;
-        const authoritative = finalDecision.source === 'db' || finalDecision.source === 'face';
-        const allowByDb = authoritative ? finalDecision.allow : deviceGranted;
+        // O motor do PortalGuard é a única autoridade: o evento 7 do
+        // equipamento NÃO é usado como fallback. Se o servidor não liberou, o
+        // portão não abre (a portaria pode liberar manualmente).
+        const allowByDb = finalDecision.allow === true;
         const identResponse = allowByDb
           ? buildIdentificationResponse(payload, urlPath, deviceType, finalDecision)
           : buildDeniedResponse(payload, urlPath);

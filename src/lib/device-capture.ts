@@ -58,15 +58,24 @@ async function queueCommandAndWait(
   endpoint: string,
   body: any,
   timeoutMs = 60000,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { verb?: string; queryString?: string }
 ): Promise<any> {
   if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
+
+  const command: Record<string, unknown> = {
+    verb: options?.verb || 'POST',
+    endpoint,
+    body,
+    contentType: 'application/json',
+  };
+  if (options?.queryString) command.queryString = options.queryString;
 
   const { data: inserted, error: insertErr } = await supabase
     .from('push_command_queue')
     .insert({
       device_id: deviceSerial,
-      command: { verb: 'POST', endpoint, body, contentType: 'application/json' },
+      command,
       status: 'pending',
     } as any)
     .select('id')
@@ -111,12 +120,12 @@ async function queueBinaryCommandAndWait(
 ): Promise<any> {
   if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
 
-  const endpointWithQuery = (() => {
-    const params = new URLSearchParams();
-    Object.entries(queryParams).forEach(([key, value]) => params.set(key, String(value)));
-    const qs = params.toString();
-    return qs ? `${endpoint}?${qs}` : endpoint;
-  })();
+  // A query vai no campo `queryString` do protocolo Push (não embutida no
+  // endpoint): embutida, o equipamento não reconhece a rota e devolve o HTML
+  // da interface web em vez de gravar a foto.
+  const params = new URLSearchParams();
+  Object.entries(queryParams).forEach(([key, value]) => params.set(key, String(value)));
+  const queryString = params.toString();
 
   const { data: inserted, error: insertErr } = await supabase
     .from('push_command_queue')
@@ -124,7 +133,8 @@ async function queueBinaryCommandAndWait(
       device_id: deviceSerial,
       command: {
         verb: 'POST',
-        endpoint: endpointWithQuery,
+        endpoint,
+        queryString,
         body: binaryBase64,
         contentType: 'application/octet-stream',
       },
@@ -261,9 +271,14 @@ export async function capturePhotoFromDevice(
 
     checkAbort();
     onStatus('Buscando foto capturada...', 'fetching', 70);
-    const photoResult = await queueCommandAndWait(serial, 'user_get_image', {
-      user_id: deviceUserId,
-    }, 30000, signal);
+    const photoResult = await queueCommandAndWait(
+      serial,
+      'user_get_image',
+      {},
+      30000,
+      signal,
+      { verb: 'GET', queryString: `user_id=${deviceUserId}` },
+    );
 
     // Only clean up if NOT persisting on device
     if (!persistOnDevice) {
@@ -774,7 +789,14 @@ export async function reconcileFromDevices(
       if (!u.image_timestamp || u.image_timestamp <= 0) { skipped++; continue; }
 
       try {
-        const photoResult = await queueCommandAndWait(serial, 'user_get_image', { user_id: u.id }, 30000);
+        const photoResult = await queueCommandAndWait(
+          serial,
+          'user_get_image',
+          {},
+          30000,
+          undefined,
+          { verb: 'GET', queryString: `user_id=${u.id}` },
+        );
         const base64 = photoResult?.user_image || photoResult?.image || photoResult?.photo;
         if (!base64) { skipped++; continue; }
 

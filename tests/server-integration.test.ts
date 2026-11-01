@@ -206,18 +206,45 @@ describe('integração do backend local', () => {
     expect(list.data[0].name).toBe('foto.png');
   });
 
-  it('Control iD webhook: identificação responde abertura de porta', async () => {
+  it('Control iD webhook: identificação de morador responde abertura de porta', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_web_res',
+          name: 'Morador Web',
+          apartment: '801',
+          contract_end_date: '2099-12-31',
+        },
+      }),
+    });
+
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 1,
+        user_id: hardwareIdFor('it_web_res'),
+        portal_id: 1,
+        device_id: 'cid-web-1',
+      }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.event).toBe(7);
+    expect(data.user_id).toBe(hardwareIdFor('it_web_res'));
+    expect(Array.isArray(data.actions)).toBe(true);
+    expect(data.actions[0].action).toBe('sec_box');
+  });
+
+  it('Control iD webhook: usuário só cadastrado no equipamento é negado pelo motor', async () => {
     const res = await fetch(`${base}/api/controlid-webhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event: 1, user_id: 123, user_name: 'Andar - Nome', portal_id: 1, device_id: 'cid-web-1' }),
     });
     expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.event).toBe(7);
-    expect(data.user_id).toBe(123);
-    expect(Array.isArray(data.actions)).toBe(true);
-    expect(data.actions[0].action).toBe('sec_box');
+    expect((await res.json()).event).toBe(6);
   });
 
   it('Control iD webhook: identificação negada pelo dispositivo (evento 3)', async () => {
