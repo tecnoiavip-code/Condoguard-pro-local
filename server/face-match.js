@@ -24,7 +24,12 @@ const VISITOR_THRESHOLD = Number(process.env.PORTALGUARD_VISITOR_FACE_THRESHOLD 
 // uma "vitória" por diferença ínfima e abrir o portão para a pessoa errada.
 const MATCH_MARGIN = Number(process.env.PORTALGUARD_FACE_MATCH_MARGIN || 0.05);
 const VISITOR_INDEX_LIMIT = Number(process.env.PORTALGUARD_VISITOR_FACE_LIMIT || 300);
-const DETECTOR_INPUT = Number(process.env.PORTALGUARD_FACE_DETECTOR_INPUT || 320);
+const DETECTOR_INPUT = Number(process.env.PORTALGUARD_FACE_DETECTOR_INPUT || 416);
+const DETECTOR_FALLBACK_INPUT = Number(process.env.PORTALGUARD_FACE_DETECTOR_FALLBACK_INPUT || 512);
+// Fotos de cadastro tiradas de perto (o rosto encosta nas bordas) não são
+// detectadas pelo TinyFaceDetector no enquadramento original. Uma borda
+// neutra devolve o contexto necessário sem alterar o rosto.
+const DETECTOR_PAD_RATIO = Number(process.env.PORTALGUARD_FACE_DETECTOR_PAD || 0.25);
 const DETECTOR_SCORE = Number(process.env.PORTALGUARD_FACE_DETECTOR_SCORE || 0.3);
 const DEVICE_TIMEOUT_MS = Number(process.env.PORTALGUARD_FACE_DEVICE_TIMEOUT || 4000);
 // Abrir uma sessão no leitor é uma ida e volta extra na rede. A câmera é
@@ -167,13 +172,46 @@ function decodeToTensor(buffer) {
   return tf.tensor3d(rgb, [jpg.height, jpg.width, 3], 'int32');
 }
 
+function padTensor(tensor, ratio) {
+  const [height, width] = tensor.shape;
+  const padY = Math.round(height * ratio);
+  const padX = Math.round(width * ratio);
+  return tf.pad(tensor, [[padY, padY], [padX, padX], [0, 0]], 235);
+}
+
+// Detecta o rosto e devolve descritor + detecção. Tenta primeiro o
+// enquadramento original, depois com uma borda neutra (rostos muito próximos)
+// e por fim uma entrada maior do detector (rostos pequenos/afastados).
+async function detectFaceDescriptor(tensor) {
+  const detect = (inputSize, source) => faceapi
+    .detectSingleFace(source, new faceapi.TinyFaceDetectorOptions({ inputSize, scoreThreshold: DETECTOR_SCORE }))
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+
+  let detection = await detect(DETECTOR_INPUT, tensor);
+  if (detection) return detection;
+
+  if (DETECTOR_PAD_RATIO > 0) {
+    const padded = padTensor(tensor, DETECTOR_PAD_RATIO);
+    try {
+      detection = await detect(Math.max(DETECTOR_INPUT, 416), padded);
+      if (detection) return detection;
+    } finally {
+      padded.dispose();
+    }
+  }
+
+  if (DETECTOR_FALLBACK_INPUT > DETECTOR_INPUT) {
+    detection = await detect(DETECTOR_FALLBACK_INPUT, tensor);
+    if (detection) return detection;
+  }
+  return null;
+}
+
 async function computeDescriptor(buffer) {
   const tensor = decodeToTensor(buffer);
   try {
-    const res = await faceapi
-      .detectSingleFace(tensor, new faceapi.TinyFaceDetectorOptions({ inputSize: DETECTOR_INPUT, scoreThreshold: DETECTOR_SCORE }))
-      .withFaceLandmarks()
-      .withFaceDescriptor();
+    const res = await detectFaceDescriptor(tensor);
     return res?.descriptor ?? null;
   } finally {
     tensor.dispose();
@@ -449,10 +487,7 @@ export function createFaceEngine({ db, photosDir, logger = console }) {
     const tensor = decodeToTensor(buffer);
     let detection = null;
     try {
-      detection = await faceapi
-        .detectSingleFace(tensor, new faceapi.TinyFaceDetectorOptions({ inputSize: DETECTOR_INPUT, scoreThreshold: DETECTOR_SCORE }))
-        .withFaceLandmarks()
-        .withFaceDescriptor();
+      detection = await detectFaceDescriptor(tensor);
     } finally {
       tensor.dispose();
     }

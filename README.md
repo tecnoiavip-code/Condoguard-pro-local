@@ -111,38 +111,60 @@ local, habilitando o envio de eventos de identificação (facial e TAG).
 ### Quem libera o portão
 
 O motor do PortalGuard é a **única autoridade de liberação**. O equipamento
-identifica a pessoa (no iDFace, com prova de vida RGB + IR) e envia o `user_id`;
-o servidor aplica as regras do banco — morador ativo, contrato em dia, lista de
-bloqueados e regra de visitantes — e só então responde `event 7` (abrir). O
-evento `event 7` vindo do equipamento **não** é mais aceito como fallback, e um
-usuário que existe apenas no equipamento é negado.
+envia o evento de identificação e o servidor aplica as regras do banco — morador
+ativo, contrato em dia, lista de bloqueados e regra de visitantes — antes de
+responder `event 7` (abrir) ou `event 6` (negar). O `event 7` vindo do
+equipamento **não** é aceito como fallback, e um usuário que existe apenas no
+equipamento é negado.
 
-Por isso os moradores precisam estar cadastrados **com foto no iDFace**: é a
-identificação local (com prova de vida) que informa ao PortalGuard quem está no
-portão. Use **Configurações → Dispositivos → Sincronizar Tudo** depois de
+Há dois caminhos de reconhecimento, e ambos terminam no motor:
+
+1. **Identificação local do iDFace (Pro Mode).** O equipamento reconhece o
+   morador pelo template gravado e envia o `user_id`. É o caminho com prova de
+   vida (RGB + IR).
+2. **Motor central do PortalGuard.** Quando o equipamento envia `event 3`
+   (não identificou, `user_id=0`), o servidor puxa o frame da câmera e compara
+   com as fotos do cadastro. **Este é o caminho habilitado por padrão**, porque
+   é o que funciona nesta instalação.
+
+Os moradores precisam estar cadastrados **com foto no iDFace** para o caminho
+local. Use **Configurações → Dispositivos → Sincronizar Tudo** depois de
 cadastrar/alterar fotos.
+
+Fotos de cadastro muito próximas (rosto encostando nas bordas) também entram no
+índice do motor central: ele adiciona uma borda neutra e tenta detectar de novo,
+para que nenhum morador com foto fique fora do reconhecimento.
 
 Se o banco não responder em até 2,5 s, o padrão é **negar** (o motor decide).
 `PORTALGUARD_ACCESS_FAIL_OPEN=1` restaura a liberação de emergência.
 
 ### iDFace e prova de vida
 
-O configurador grava `face_id.liveness_mode = "1"` (modo rigoroso) no
-equipamento. Quando o iDFace manda `event 3` (não identificou), o servidor
-**não** abre o portão para morador a partir do frame RGB isolado — esse frame não
-tem prova de vida e aceita foto. Visitantes reconhecidos nesse caminho continuam
-gerando pedido de liberação para a portaria.
+O configurador grava `face_id.liveness_mode = "1"` (modo rigoroso) e
+`limit_identification_to_display_region = "0"` (identifica em todo o campo de
+visão da câmera). Quando o iDFace identifica localmente, a prova de vida está no
+caminho.
+
+O frame RGB usado pelo motor central **não** tem prova de vida. Para exigir que
+a liberação só aconteça pela identificação local do iDFace (com liveness),
+defina `PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN=0` — nesse modo, um rosto
+reconhecido apenas no servidor não abre o portão. Visitantes reconhecidos nesse
+caminho continuam gerando pedido de liberação para a portaria.
 
 | Variável | Efeito |
 | -------- | ------ |
 | `VITE_CONTROLID_HOST` | `ip:porta` gravado no configurador. Padrão: o endereço usado no navegador, ou `127.0.0.1:8080`. |
 | `CONTROLID_AUTO_REFRESH` | `1` reativa o reenvio periódico da configuração. Desativado por padrão, porque o configurador já grava no flash e o reenvio sobrescreve. |
 | `CONTROLID_LIVENESS_MODE` | `1` (padrão) grava prova de vida rigorosa no iDFace; `0` usa o modo normal de fábrica. |
+| `CONTROLID_LIMIT_FACE_REGION` | `1` limita a identificação local à região da tela; `0` (padrão) usa todo o campo de visão da câmera. |
 | `CONTROLID_FACE_SIMILARITY_THRESHOLD` | Opcional. Grava `bio_id.similarity_threshold_1ton` (padrão de fábrica `12300`). Teste `12800`–`13200` para reduzir falso aceite. |
 | `PORTALGUARD_DEVICE_MIN_CONFIDENCE` | Opcional. Confiança mínima do `confidence` enviado pelo iDFace para liberar. `0` desliga. Calibre com leituras reais antes de ativar. |
 | `PORTALGUARD_FACE_MATCH_MARGIN` | Margem mínima entre o melhor e o segundo candidato no motor central (padrão `0.05`). |
+| `PORTALGUARD_FACE_DETECTOR_INPUT` | Resolução de entrada do detector facial (padrão `416`). Valores maiores ajudam rostos pequenos/afastados. |
+| `PORTALGUARD_FACE_DETECTOR_FALLBACK_INPUT` | Segunda tentativa do detector para rostos pequenos (padrão `512`). |
+| `PORTALGUARD_FACE_DETECTOR_PAD` | Borda neutra adicionada ao redor da imagem quando o rosto encosta nas bordas, em fração da imagem (padrão `0.25`). |
 | `PORTALGUARD_ALLOW_DEVICE_LOCAL_USERS` | `1` volta a liberar usuários cadastrados somente no equipamento. **Não recomendado**: tira a decisão do motor. |
 | `PORTALGUARD_ACCESS_FAIL_OPEN` | `1` libera quando o banco não responde (emergência). Padrão: nega. |
-| `PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN` | `1` volta a permitir que o motor central abra para morador usando apenas o frame RGB. **Não recomendado**: remove a prova de vida do caminho. |
+| `PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN` | `0` exige a identificação local do iDFace (com prova de vida) para liberar morador; o motor central só gera pedido para visitantes. Padrão `1`: o motor central também libera morador pelo frame RGB (sem prova de vida). |
 
 # Condoguard-pro-local

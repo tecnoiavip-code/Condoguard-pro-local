@@ -139,7 +139,10 @@ export function buildWebhookConfig(req, { facial = false } = {}) {
   if (facial) {
     config.face_id = {
       liveness_mode: process.env.CONTROLID_LIVENESS_MODE || '1',
-      limit_identification_to_display_region: process.env.CONTROLID_LIMIT_FACE_REGION || '1',
+      // 0 = identifica em todo o campo de visão da câmera. Com "1" o iDFace só
+      // identifica dentro da região exibida na tela, o que deixava pessoas
+      // fora do enquadramento sem identificação local (user_id=0).
+      limit_identification_to_display_region: process.env.CONTROLID_LIMIT_FACE_REGION || '0',
     };
     config.identifier = { face_identification_enabled: '1' };
     // Knob opcional: valores maiores reduzem falso aceite e aumentam falso
@@ -231,8 +234,9 @@ function buildIdentificationActions(payload) {
   const resolvedPortal = Number.isFinite(portalId) && portalId > 0 ? portalId : 1;
   const relayAction = process.env.CONTROLID_RELAY_ACTION === 'door' ? 'door' : 'sec_box';
 
-  // Um único relé: cada modelo tem saídas independentes e pulsar as duas pode
-  // acionar portas diferentes. A escolha vem de CONTROLID_RELAY_ACTION.
+  // O iDFace desta instalação não aceita a ação `door` (retorna "Invalid
+  // command: door"); o portão é acionado pelo SecBox (id=65793). A escolha
+  // continua vindo de CONTROLID_RELAY_ACTION para outros modelos.
   return [{
     action: relayAction,
     parameters: relayAction === 'door' ? `door=${resolvedPortal}` : 'id=65793, reason=1',
@@ -612,12 +616,18 @@ function withTimeout(promise, ms, fallback) {
 export function registerControlidWebhook(app, ctx) {
   const { db, now, genId, notifyRealtime, PHOTOS_DIR, faceEngine = null } = ctx;
   const FACE_TIMEOUT_MS = Number(process.env.PORTALGUARD_FACE_TIMEOUT_MS || 6000);
-  // O iDFace já identifica localmente com prova de vida (RGB + IR). O frame
-  // RGB que o servidor puxa em uma falha de identificação não tem prova de
-  // vida e aceita foto; por isso ele NÃO abre o portão para morador por
-  // padrão. Quem está cadastrado no equipamento continua abrindo automático.
+  // O motor central do PortalGuard reconhece o morador pela foto do cadastro
+  // quando o equipamento envia event 3 (não identificou localmente) e libera
+  // automaticamente. Nesta instalação o iDFace está em Pro Mode, mas não
+  // identifica localmente (user_id=0); o caminho que funciona é o frame RGB
+  // puxado do equipamento + a foto do cadastro. A decisão continua sendo do
+  // PortalGuard (o equipamento não abre sozinho).
+  //
+  // Esse frame RGB não tem prova de vida. Para exigir a identificação local do
+  // iDFace (com liveness RGB + IR), defina
+  // PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN=0.
   const FACE_CENTRAL_RESIDENT_AUTO_OPEN =
-    process.env.PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN === '1';
+    process.env.PORTALGUARD_FACE_CENTRAL_RESIDENT_AUTO_OPEN !== '0';
   // Confiança mínima informada pelo equipamento (campo `confidence` do evento
   // new_user_identified). 0 desliga a checagem; calibrar com leituras reais.
   const DEVICE_MIN_CONFIDENCE = Number(process.env.PORTALGUARD_DEVICE_MIN_CONFIDENCE || 0);
@@ -1514,11 +1524,23 @@ export function registerControlidWebhook(app, ctx) {
             const extra = {};
             if (Number.isFinite(deviceConfidence)) extra.device_confidence = deviceConfidence;
             if (faceResult) {
+              const bestCandidate = faceResult.matched
+                ? { name: faceResult.name, distance: faceResult.distance }
+                : faceResult.best;
+              const secondCandidate = faceResult.matched
+                ? { distance: faceResult.second_distance }
+                : faceResult.second;
               extra.face_identification = {
                 matched: !!faceResult.matched,
                 reason: faceResult.reason || null,
                 distance: faceResult.distance ?? null,
                 second_distance: faceResult.second_distance ?? null,
+                // Guarda também os candidatos quando NÃO houve match. Sem isso
+                // um "ambiguo"/"abaixo_do_limiar" não diz quem chegou perto.
+                best_name: bestCandidate?.name || null,
+                best_distance: bestCandidate?.distance ?? null,
+                second_name: secondCandidate?.name || null,
+                second_candidate_distance: secondCandidate?.distance ?? null,
                 resident_id: faceResult.residentId || null,
                 resident_name: (finalDecision?.source === 'face' && finalDecision.resident_name) || faceResult.name || null,
               };
