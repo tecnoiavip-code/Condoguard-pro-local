@@ -150,6 +150,11 @@ de destino; somente depois disso o motor aciona o relé. O endereço escolhido
 fica registrado na entrada, e a saída é registrada na leitura seguinte, sem nova
 confirmação.
 
+Prestadores fixos e domésticos também geram registro em **Logs de Acesso**: a
+primeira leitura abre a entrada (a pessoa aparece em "Ativos no Condomínio") e a
+leitura seguinte registra a saída, mantendo o histórico de entrada/saída para
+controle e relatórios.
+
 ### Desativar um dispositivo
 
 No card do dispositivo (**Configurações → Dispositivos**), o botão **Desativar**

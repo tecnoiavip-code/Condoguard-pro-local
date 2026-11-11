@@ -513,18 +513,20 @@ describe('integração do backend local', () => {
     expect((await res.json()).session_is_valid).toBe(true);
   });
 
-  it('doméstico reconhecido entra automaticamente no log de acesso', async () => {
+  it('doméstico reconhecido registra entrada e saída no log de acesso', async () => {
     await api('/api/table/residents', {
       method: 'POST',
       body: JSON.stringify({ row: { id: 'it_colab_1', name: 'Domestico Fixo', apartment: '801', person_type: 'empregado' } }),
     });
 
-    const res = await fetch(`${base}/api/controlid-webhook`, {
+    const scan = () => fetch(`${base}/api/controlid-webhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event: 1, user_id: 900, user_name: '801 - Domestico Fixo', portal_id: 1, device_id: 'cid-dec-1' }),
     });
-    expect((await res.json()).event).toBe(7);
+
+    // Primeira leitura: entrada registrada e aberta.
+    expect((await (await scan()).json()).event).toBe(7);
 
     const rows = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_colab_1' }])));
     expect(rows.error).toBeNull();
@@ -534,17 +536,37 @@ describe('integração do backend local', () => {
     expect(entry.visitor_name).toBe('Domestico Fixo');
     expect(entry.apartment).toBe('801');
     expect(entry.entry_time).toBeTruthy();
-    expect(entry.exit_time).toBe(entry.entry_time);
+    expect(entry.entry_scan_at).toBeTruthy();
+    expect(entry.exit_time).toBeNull();
     expect(entry.auto_recognized).toBe(true);
+
+    // Simula a saída algum tempo depois (fora da janela anti-duplicação).
+    await api('/api/table/access_entries', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        set: {
+          entry_time: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          entry_scan_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        },
+        filters: [{ col: 'id', op: 'eq', value: entry.id }],
+      }),
+    });
+    expect((await (await scan()).json()).event).toBe(7);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const afterExit = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_colab_1' }])));
+    expect(afterExit.data).toHaveLength(1);
+    expect(afterExit.data[0].exit_time).toBeTruthy();
+    expect(afterExit.data[0].exit_time).not.toBe(afterExit.data[0].entry_time);
   });
 
-  it('prestador fixo do cadastro de moradores entra automaticamente no log de acesso', async () => {
+  it('prestador fixo do cadastro de moradores registra entrada e saída no log de acesso', async () => {
     await api('/api/table/residents', {
       method: 'POST',
-      body: JSON.stringify({ row: { id: 'it_prest_1', name: 'Prestador Fixo', apartment: '901', person_type: 'prestador' } }),
+      body: JSON.stringify({ row: { id: 'it_prest_1', name: 'Prestador Fixo', apartment: '901', person_type: 'prestador', cpf: '11122233344' } }),
     });
 
-    const res = await fetch(`${base}/api/controlid-webhook`, {
+    const scan = () => fetch(`${base}/api/controlid-webhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -555,7 +577,8 @@ describe('integração do backend local', () => {
         device_id: 'cid-dec-2',
       }),
     });
-    expect((await res.json()).event).toBe(7);
+
+    expect((await (await scan()).json()).event).toBe(7);
 
     const rows = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_prest_1' }])));
     expect(rows.error).toBeNull();
@@ -564,9 +587,29 @@ describe('integração do backend local', () => {
     expect(entry.visitor_type).toBe('service_provider');
     expect(entry.visitor_name).toBe('Prestador Fixo');
     expect(entry.apartment).toBe('901');
+    expect(entry.visitor_document).toBe('11122233344');
     expect(entry.entry_time).toBeTruthy();
-    expect(entry.exit_time).toBe(entry.entry_time);
+    expect(entry.entry_scan_at).toBeTruthy();
+    expect(entry.exit_time).toBeNull();
     expect(entry.auto_recognized).toBe(true);
+
+    // Saída registrada na leitura seguinte, fora da janela anti-duplicação.
+    await api('/api/table/access_entries', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        set: {
+          entry_time: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          entry_scan_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        },
+        filters: [{ col: 'id', op: 'eq', value: entry.id }],
+      }),
+    });
+    expect((await (await scan()).json()).event).toBe(7);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const afterExit = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_prest_1' }])));
+    expect(afterExit.data).toHaveLength(1);
+    expect(afterExit.data[0].exit_time).toBeTruthy();
   });
 
   it('prestador do Novo Cadastro exige confirmação da portaria e endereço de destino', async () => {

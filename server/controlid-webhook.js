@@ -671,28 +671,54 @@ export function registerControlidWebhook(app, ctx) {
   }
 
   // Prestador de servico fixo / empregado domestico reconhecido pelo leitor:
-  // grava a passagem no log de acesso (access_entries) como registro CONCLUIDO
-  // (entry_time = exit_time) para constar nos "Logs de Acesso" e relatorios,
-  // sem ficar em "Ativos no Condominio". Moradores nao geram registro.
+  // registra ENTRADA e SAIDA no log de acesso (access_entries) para controle e
+  // relatorios. A primeira leitura abre a passagem (entrada); a leitura
+  // seguinte, fora da janela anti-duplicacao, registra a saida. Moradores nao
+  // geram registro.
   function recordCollaboratorAccess(residentId) {
     try {
       if (!residentId) return;
-      const resident = db.prepare('SELECT id, name, apartment, person_type FROM residents WHERE id = ?').get(residentId);
+      const resident = db.prepare('SELECT id, name, apartment, person_type, cpf FROM residents WHERE id = ?').get(residentId);
       if (!resident) return;
       const personType = String(resident.person_type || 'morador');
       if (personType === 'morador') return;
 
+      const nowMs = Date.now();
+      const last = db.prepare(`SELECT * FROM access_entries
+        WHERE resident_id = ? AND visitor_type IN ('service_provider', 'visitor', 'delivery')
+        ORDER BY entry_time DESC LIMIT 1`).get(resident.id);
+      const lastEventAt = last?.exit_time || last?.entry_time;
+      const lastEventMs = lastEventAt ? new Date(lastEventAt).getTime() : 0;
+      // O leitor pode enviar a mesma leitura mais de uma vez em segundos.
+      if (last && lastEventMs && (nowMs - lastEventMs) < FACIAL_SCAN_DEBOUNCE_MS) return;
+
       const ts = now();
       const name = resident.name || '';
+
+      if (last && !last.exit_time) {
+        // Já está dentro: esta leitura registra a saída.
+        db.prepare(`UPDATE access_entries
+          SET exit_time = ?, entry_scan_at = COALESCE(entry_scan_at, entry_time, ?)
+          WHERE id = ?`).run(ts, ts, last.id);
+        const updated = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(last.id);
+        notifyRealtime('access_entries', 'UPDATE',
+          { ...updated, auto_recognized: !!updated.auto_recognized },
+          { ...last, auto_recognized: !!last.auto_recognized });
+        return;
+      }
+
+      // Nova passagem: registra a entrada (fica aberta até a leitura de saída).
       const id = genId();
+      const label = personType === 'prestador' ? 'prestador de serviço' : 'empregado doméstico';
       db.prepare(`INSERT INTO access_entries (
-        id, apartment, auto_recognized, badge_number, company, entry_time, exit_time,
+        id, apartment, auto_recognized, badge_number, company, entry_time, entry_scan_at, exit_time,
         notes, photo_url, purpose, registered_by, resident_id, resident_name,
         vehicle_color, vehicle_model, vehicle_plate, visitor_document, visitor_name, visitor_type
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        id, resident.apartment || '', 1, null, null, ts, ts,
-        null, null, 'Acesso automatico (leitor)', null, resident.id, name,
-        null, null, null, '', name, 'service_provider'
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        id, resident.apartment || '', 1, null, null, ts, ts, null,
+        `Entrada automática (leitor) - ${label}`,
+        null, null, null, resident.id, name,
+        null, null, null, resident.cpf || '', name, 'service_provider'
       );
       const inserted = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(id);
       notifyRealtime('access_entries', 'INSERT', { ...inserted, auto_recognized: !!inserted.auto_recognized });
