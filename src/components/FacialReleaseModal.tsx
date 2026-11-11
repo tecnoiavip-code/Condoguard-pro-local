@@ -159,7 +159,7 @@ export const FacialReleaseModal = () => {
           <DialogDescription>
             {isProvider
               ? 'Prestador de serviço reconhecido. Confirme o acesso e o endereço de destino antes de liberar o portão.'
-              : 'Cadastro do Novo Cadastro reconhecido na volta ao condomínio.'}
+              : 'Cadastro do Novo Cadastro reconhecido. Confirme o acesso e o destino antes de liberar o portão.'}
           </DialogDescription>
         </DialogHeader>
 

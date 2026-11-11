@@ -993,27 +993,29 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
           return res.status(409).json({ error: { message: 'Este pedido já foi resolvido' } });
         }
 
-        // O cadastro pode já estar dentro (outra aprovação/entrada manual).
-        // Não criar uma segunda entrada ativa para a mesma pessoa.
-        if (request.provider_resident_id) {
-          const activeEntry = db.prepare(`SELECT id, visitor_name, apartment FROM access_entries
-            WHERE provider_resident_id = ?
-              AND exit_time IS NULL
-            LIMIT 1`).get(request.provider_resident_id);
-          if (activeEntry) {
-            return res.status(409).json({
-              error: {
-                message: `${activeEntry.visitor_name} já possui uma entrada ativa (${activeEntry.apartment}). Registre a saída antes de uma nova entrada.`,
-              },
-            });
-          }
-        } else if (request.visitor_document) {
+        // Cadastro do Novo Cadastro pode já ter criado a entrada (aguardando a
+        // confirmação da portaria). Nesse caso reutilizamos o registro em vez
+        // de duplicar. Qualquer outra entrada ativa bloqueia nova liberação.
+        const subjectClause = request.visitor_document
+          ? 'lower(visitor_document) = lower(?)'
+          : 'lower(visitor_name) = lower(?)';
+        const subjectValue = request.visitor_document || request.visitor_name;
+        const pendingEntry = subjectValue
+          ? db.prepare(`SELECT * FROM access_entries
+              WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
+                AND ${subjectClause}
+                AND exit_time IS NULL
+                AND entry_scan_at IS NULL
+              ORDER BY entry_time DESC LIMIT 1`).get(subjectValue)
+          : null;
+
+        if (subjectValue) {
           const activeEntry = db.prepare(`SELECT id, visitor_name, apartment FROM access_entries
             WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
-              AND lower(visitor_document) = lower(?)
+              AND ${subjectClause}
               AND exit_time IS NULL
-            LIMIT 1`).get(request.visitor_document);
-          if (activeEntry) {
+            LIMIT 1`).get(subjectValue);
+          if (activeEntry && activeEntry.id !== pendingEntry?.id) {
             return res.status(409).json({
               error: {
                 message: `${activeEntry.visitor_name} já possui uma entrada ativa (${activeEntry.apartment}). Registre a saída antes de uma nova entrada.`,
@@ -1061,7 +1063,7 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
           }
         }
 
-        const entryId = genId();
+        const entryId = pendingEntry?.id || genId();
         const relayAction = process.env.CONTROLID_RELAY_ACTION === 'door' ? 'door' : 'sec_box';
         const doorCommand = {
           verb: 'POST',
@@ -1078,36 +1080,52 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
         let queued = false;
         db.exec('BEGIN');
         try {
-          db.prepare(`INSERT INTO access_entries (
-            id, apartment, auto_recognized, badge_number, company, entry_time, entry_scan_at, exit_time,
-            notes, photo_url, purpose, registered_by, resident_id, resident_name,
-            vehicle_color, vehicle_model, vehicle_plate, visitor_document, visitor_name, visitor_type,
-            provider_resident_id
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-            entryId,
-            apartment,
-            1,
-            request.badge_number || null,
-            request.company || null,
-            ts,
-            null,
-            null,
-            request.provider_resident_id
-              ? 'Prestador de serviço confirmado pela portaria'
-              : 'Liberação facial autorizada pela portaria',
-            request.photo_url || null,
-            request.purpose || null,
-            'reconhecimento_facial',
-            residentId,
-            residentName,
-            request.vehicle_color || null,
-            request.vehicle_model || null,
-            request.vehicle_plate || null,
-            request.visitor_document || '',
-            request.visitor_name,
-            request.visitor_type || 'visitor',
-            request.provider_resident_id || null,
-          );
+          if (pendingEntry) {
+            // Confirma a entrada já cadastrada pelo Novo Cadastro, atualizando
+            // o destino escolhido pela portaria e marcando a entrada como
+            // validada (a próxima leitura passa a registrar a saída).
+            db.prepare(`UPDATE access_entries
+              SET apartment = ?, resident_id = ?, resident_name = ?,
+                  entry_time = ?, entry_scan_at = ?, auto_recognized = 1,
+                  notes = ?, photo_url = COALESCE(photo_url, ?)
+              WHERE id = ?`).run(
+              apartment,
+              residentId,
+              residentName,
+              ts,
+              ts,
+              'Entrada confirmada pela portaria',
+              request.photo_url || null,
+              entryId,
+            );
+          } else {
+            db.prepare(`INSERT INTO access_entries (
+              id, apartment, auto_recognized, badge_number, company, entry_time, entry_scan_at, exit_time,
+              notes, photo_url, purpose, registered_by, resident_id, resident_name,
+              vehicle_color, vehicle_model, vehicle_plate, visitor_document, visitor_name, visitor_type
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+              entryId,
+              apartment,
+              1,
+              request.badge_number || null,
+              request.company || null,
+              ts,
+              ts,
+              null,
+              'Liberação facial autorizada pela portaria',
+              request.photo_url || null,
+              request.purpose || null,
+              'reconhecimento_facial',
+              residentId,
+              residentName,
+              request.vehicle_color || null,
+              request.vehicle_model || null,
+              request.vehicle_plate || null,
+              request.visitor_document || '',
+              request.visitor_name,
+              request.visitor_type || 'visitor',
+            );
+          }
 
           db.prepare(`UPDATE facial_release_requests
             SET status = 'approved', resolved_at = ?, resolved_by = ?, entry_id = ?
@@ -1127,7 +1145,7 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
         }
 
         const entry = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(entryId);
-        if (entry) notifyRealtime('access_entries', 'INSERT', { ...entry, auto_recognized: !!entry.auto_recognized });
+        if (entry) notifyRealtime('access_entries', pendingEntry ? 'UPDATE' : 'INSERT', { ...entry, auto_recognized: !!entry.auto_recognized });
         const updatedRequest = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
         notifyRealtime('facial_release_requests', 'UPDATE', updatedRequest);
 

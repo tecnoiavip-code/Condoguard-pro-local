@@ -138,14 +138,16 @@ para que nenhum morador com foto fique fora do reconhecimento.
 Se o banco não responder em até 2,5 s, o padrão é **negar** (o motor decide).
 `PORTALGUARD_ACCESS_FAIL_OPEN=1` restaura a liberação de emergência.
 
-### Prestadores de serviço fixo
+### Prestadores e visitantes do Novo Cadastro
 
-Domésticos (`person_type = empregado`) continuam liberados automaticamente.
-Já os prestadores de serviço fixo (`person_type = prestador`) **não abrem
-sozinhos**: o reconhecimento facial (local ou central) gera um pedido na tela da
-portaria. A portaria confirma o acesso e escolhe o morador/apartamento de
-destino; somente depois disso o motor aciona o relé. O endereço escolhido fica
-registrado na entrada, e a saída é registrada na leitura seguinte, sem nova
+Prestadores fixos e domésticos cadastrados na **área de moradores**
+(`person_type = prestador` ou `empregado`) continuam liberados automaticamente.
+
+Já os prestadores de serviço e visitantes cadastrados no formulário do **Novo
+Cadastro** não abrem pelo reconhecimento facial: cada leitura gera um pedido na
+tela da portaria. A portaria confirma o acesso e escolhe o morador/apartamento
+de destino; somente depois disso o motor aciona o relé. O endereço escolhido
+fica registrado na entrada, e a saída é registrada na leitura seguinte, sem nova
 confirmação.
 
 ### Desativar um dispositivo

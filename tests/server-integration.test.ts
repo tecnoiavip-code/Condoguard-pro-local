@@ -538,64 +538,124 @@ describe('integração do backend local', () => {
     expect(entry.auto_recognized).toBe(true);
   });
 
-  it('prestador reconhecido exige confirmação da portaria e endereço de destino', async () => {
+  it('prestador fixo do cadastro de moradores entra automaticamente no log de acesso', async () => {
     await api('/api/table/residents', {
       method: 'POST',
-      body: JSON.stringify({ row: { id: 'it_prest_1', name: 'Prestador Confirmacao', apartment: '901', person_type: 'prestador' } }),
-    });
-    await api('/api/table/residents', {
-      method: 'POST',
-      body: JSON.stringify({ row: { id: 'it_dest_1', name: 'Morador Destino', apartment: '902', person_type: 'morador' } }),
+      body: JSON.stringify({ row: { id: 'it_prest_1', name: 'Prestador Fixo', apartment: '901', person_type: 'prestador' } }),
     });
 
-    // O leitor identificou o prestador: o portão NÃO abre sozinho.
     const res = await fetch(`${base}/api/controlid-webhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         event: 7,
         user_id: hardwareIdFor('it_prest_1'),
-        user_name: '901 - Prestador Confirmacao',
+        user_name: '901 - Prestador Fixo',
         portal_id: 1,
         device_id: 'cid-dec-2',
       }),
     });
-    expect((await res.json()).event).toBe(6);
+    expect((await res.json()).event).toBe(7);
 
-    const requests = await api('/api/table/facial_release_requests?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'provider_resident_id', op: 'eq', value: 'it_prest_1' }])));
+    const rows = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'resident_id', op: 'eq', value: 'it_prest_1' }])));
+    expect(rows.error).toBeNull();
+    expect(rows.data).toHaveLength(1);
+    const entry = rows.data[0];
+    expect(entry.visitor_type).toBe('service_provider');
+    expect(entry.visitor_name).toBe('Prestador Fixo');
+    expect(entry.apartment).toBe('901');
+    expect(entry.entry_time).toBeTruthy();
+    expect(entry.exit_time).toBe(entry.entry_time);
+    expect(entry.auto_recognized).toBe(true);
+  });
+
+  it('prestador do Novo Cadastro exige confirmação da portaria e endereço de destino', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_dest_1', name: 'Morador Destino', apartment: '902', person_type: 'morador' } }),
+    });
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_dest_2', name: 'Morador Destino Dois', apartment: '904', person_type: 'morador' } }),
+    });
+    // Cadastro feito no formulário do Novo Cadastro (entrada ainda não confirmada).
+    const preRegistro = await api('/api/table/access_entries', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_novo_prest_1',
+          visitor_name: 'Prestador Novo Cadastro',
+          visitor_document: 'PREST-NOVO-1',
+          visitor_type: 'service_provider',
+          apartment: '902',
+          resident_id: 'it_dest_1',
+          resident_name: 'Morador Destino',
+          entry_time: new Date().toISOString(),
+          exit_time: null,
+        },
+      }),
+    });
+    expect(preRegistro.error).toBeNull();
+
+    const scan = () => fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 7,
+        registration: 'PREST-NOVO-1',
+        user_name: '902 - Prestador Novo Cadastro',
+        portal_id: 1,
+        device_id: 'cid-dec-2',
+      }),
+    });
+
+    // O portão NÃO abre sozinho: a portaria precisa confirmar.
+    expect((await (await scan()).json()).event).toBe(6);
+
+    const requests = await api('/api/table/facial_release_requests?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'visitor_document', op: 'eq', value: 'PREST-NOVO-1' }])));
     expect(requests.error).toBeNull();
     expect(requests.data).toHaveLength(1);
     const request = requests.data[0];
     expect(request.status).toBe('pending');
     expect(request.visitor_type).toBe('service_provider');
-    expect(request.visitor_name).toBe('Prestador Confirmacao');
-    expect(request.apartment).toBe('');
+    expect(request.visitor_name).toBe('Prestador Novo Cadastro');
 
-    // Sem escolher o destino a portaria não consegue liberar.
-    const semDestino = await fetch(`${base}/api/functions/facial-release`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: 'approve', request_id: request.id }),
-    });
-    expect(semDestino.status).toBe(400);
-
+    // A portaria confirma e escolhe o endereço de destino.
     const approve = await fetch(`${base}/api/functions/facial-release`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ action: 'approve', request_id: request.id, resident_id: 'it_dest_1' }),
+      body: JSON.stringify({ action: 'approve', request_id: request.id, resident_id: 'it_dest_2' }),
     });
     expect(approve.status).toBe(200);
     expect((await approve.json()).ok).toBe(true);
 
-    const entries = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'provider_resident_id', op: 'eq', value: 'it_prest_1' }])));
+    const entries = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'visitor_document', op: 'eq', value: 'PREST-NOVO-1' }])));
     expect(entries.data).toHaveLength(1);
     const entry = entries.data[0];
-    expect(entry.apartment).toBe('902');
-    expect(entry.resident_id).toBe('it_dest_1');
-    expect(entry.resident_name).toBe('Morador Destino');
-    expect(entry.visitor_name).toBe('Prestador Confirmacao');
-    expect(entry.visitor_type).toBe('service_provider');
+    expect(entry.id).toBe('it_novo_prest_1');
+    expect(entry.apartment).toBe('904');
+    expect(entry.resident_id).toBe('it_dest_2');
+    expect(entry.resident_name).toBe('Morador Destino Dois');
+    expect(entry.entry_scan_at).toBeTruthy();
     expect(entry.exit_time).toBeNull();
+
+    // Simula a saída algum tempo depois (fora da janela anti-duplicação).
+    await api('/api/table/access_entries', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        set: {
+          entry_time: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          entry_scan_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        },
+        filters: [{ col: 'id', op: 'eq', value: 'it_novo_prest_1' }],
+      }),
+    });
+
+    // A leitura seguinte registra a saída, sem nova confirmação.
+    expect((await (await scan()).json()).event).toBe(7);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const afterExit = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'id', op: 'eq', value: 'it_novo_prest_1' }])));
+    expect(afterExit.data[0].exit_time).toBeTruthy();
   });
 
   it('desativar o dispositivo suspende o motor imediatamente', async () => {

@@ -325,7 +325,7 @@ const findResidentByDeviceUserId = (db, deviceUserId) => {
   if (!uid) return null;
   try {
     const rows = db.prepare(
-      'SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag, cpf, photo_url FROM residents',
+      'SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents',
     ).all();
     return rows.find((row) => hardwareIdFor(row.id) === uid) || null;
   } catch {
@@ -403,7 +403,7 @@ const evaluateCentralAccess = async (db, payload) => {
       const candidates = Array.from(new Set([cleanCardValue, cardValue].filter(Boolean)));
       const placeholders = candidates.map(() => '?').join(',');
       resident = db.prepare(
-        `SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag, cpf, photo_url FROM residents WHERE vehicle_tag IN (${placeholders}) LIMIT 1`
+        `SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents WHERE vehicle_tag IN (${placeholders}) LIMIT 1`
       ).get(...candidates) || null;
     }
 
@@ -417,7 +417,7 @@ const evaluateCentralAccess = async (db, payload) => {
       const { apartment: apt, name: rawName } = splitDeviceUserName(userName);
       if (apt && rawName) {
         const rows = db.prepare(
-          'SELECT id, name, apartment, contract_type, contract_end_date, person_type, cpf, photo_url FROM residents WHERE apartment LIKE ?'
+          'SELECT id, name, apartment, contract_type, contract_end_date, person_type FROM residents WHERE apartment LIKE ?'
         ).all(`%${apt}%`);
         const target = normalizeName(rawName);
         // Antes de aceitar qualquer morador por semelhança de nome, verifica se
@@ -465,23 +465,6 @@ const evaluateCentralAccess = async (db, payload) => {
         if (resident.contract_end_date < today) {
           return { ...found, allow: false, reason: 'Contrato vencido' };
         }
-      }
-      // Prestador de serviço fixo: NÃO abre sozinho. A portaria confirma o
-      // acesso e escolhe o endereço (morador/apartamento) de destino antes de
-      // acionar o portão. Domésticos (empregado) seguem automáticos.
-      if ((resident.person_type || 'morador') === 'prestador') {
-        return {
-          ...found,
-          allow: false,
-          reason: 'Prestador aguardando confirmação da portaria',
-          provider_requires_approval: true,
-          provider: {
-            id: resident.id,
-            name: resident.name,
-            apartment: resident.apartment || '',
-            cpf: resident.cpf || '',
-          },
-        };
       }
       if (resident.person_type && resident.person_type !== 'morador') {
         return { ...found, reason: 'Acesso autorizado - colaborador ativo' };
@@ -697,10 +680,7 @@ export function registerControlidWebhook(app, ctx) {
       const resident = db.prepare('SELECT id, name, apartment, person_type FROM residents WHERE id = ?').get(residentId);
       if (!resident) return;
       const personType = String(resident.person_type || 'morador');
-      // Prestador de serviço fixo não é mais auto-liberado; o acesso dele é
-      // registrado pela confirmação da portaria (facial-release). Aqui ficam
-      // apenas os domésticos, que continuam entrando automaticamente.
-      if (personType !== 'empregado') return;
+      if (personType === 'morador') return;
 
       const ts = now();
       const name = resident.name || '';
@@ -732,7 +712,6 @@ export function registerControlidWebhook(app, ctx) {
   // Cada visita concluída exige uma nova liberação da portaria. O leitor serve
   // para entrada e saída: a primeira leitura confirma a entrada (janela de
   // tolerância após o cadastro) e a seguinte registra a saída.
-  const FACIAL_GRACE_MS = Number(process.env.PORTALGUARD_FACIAL_ENTRY_GRACE_MS || 120000);
   const FACIAL_SCAN_DEBOUNCE_MS = Number(process.env.PORTALGUARD_FACIAL_SCAN_DEBOUNCE_MS || 30000);
   const FACIAL_REQUEST_TTL_MS = Number(process.env.PORTALGUARD_FACIAL_REQUEST_TTL_MS || 300000);
   const FACIAL_DENY_COOLDOWN_MS = Number(process.env.PORTALGUARD_FACIAL_DENY_COOLDOWN_MS || 60000);
@@ -785,7 +764,6 @@ export function registerControlidWebhook(app, ctx) {
 
     if (active) {
       const nowMs = Date.now();
-      const entryAge = active.entry_time ? nowMs - new Date(active.entry_time).getTime() : Number.POSITIVE_INFINITY;
       const scanAge = active.entry_scan_at ? nowMs - new Date(active.entry_scan_at).getTime() : null;
 
       // O leitor pode capturar o mesmo rosto mais de uma vez em segundos: não
@@ -794,19 +772,15 @@ export function registerControlidWebhook(app, ctx) {
         return { ...base, allow: true, reason: 'Entrada em andamento', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
       }
 
-      // Entrada recém-cadastrada/aprovada: a primeira leitura apenas confirma
-      // que a pessoa entrou, sem fechar a visita.
-      if (!active.entry_scan_at && entryAge < FACIAL_GRACE_MS) {
-        const ts = now();
-        db.prepare('UPDATE access_entries SET entry_scan_at = ? WHERE id = ?').run(ts, active.id);
-        const updated = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(active.id);
-        notifyRealtime('access_entries', 'UPDATE',
-          { ...updated, auto_recognized: !!updated.auto_recognized },
-          { ...active, auto_recognized: !!active.auto_recognized });
-        return { ...base, allow: true, reason: 'Entrada confirmada', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
+      // Já entrou (a portaria liberou esta visita): a leitura seguinte é a saída.
+      if (active.entry_scan_at) {
+        return { ...base, allow: true, reason: 'Saída registrada', source: 'db', visitor_action: 'exit', visitor_entry_id: active.id };
       }
 
-      return { ...base, allow: true, reason: 'Saída registrada', source: 'db', visitor_action: 'exit', visitor_entry_id: active.id };
+      // Cadastro do Novo Cadastro ainda NÃO confirmado pela portaria. Mesmo que
+      // o formulário já tenha criado a entrada, o portão só abre depois da
+      // confirmação da portaria (com o endereço de destino). A liberação
+      // acontece ao aprovar o pedido abaixo.
     }
 
     const ts = now();
@@ -867,128 +841,6 @@ export function registerControlidWebhook(app, ctx) {
     const row = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
     notifyRealtime('facial_release_requests', 'INSERT', row);
     return { ...base, allow: false, reason: 'Aguardando liberação da portaria', source: 'db', visitor_action: 'pending', release_request_id: requestId };
-  }
-
-  // Prestador de serviço fixo reconhecido pelo rosto (ou pelo próprio leitor).
-  // Diferente do doméstico, NÃO abre automaticamente: gera um pedido para a
-  // portaria confirmar o acesso e escolher o endereço de destino. A saída é
-  // registrada normalmente, sem nova confirmação.
-  function providerPhotoUrl(providerId) {
-    try {
-      const dir = path.join(PHOTOS_DIR, 'resident-photos', String(providerId));
-      const file = ['photo.jpg', 'photo.jpeg', 'photo.png'].find((name) => fs.existsSync(path.join(dir, name)));
-      if (!file) return null;
-      return `/api/storage/file?bucket=resident-photos&path=${encodeURIComponent(`${providerId}/${file}`)}`;
-    } catch {
-      return null;
-    }
-  }
-
-  function decideProviderAccess(deviceId, provider) {
-    const providerId = String(provider?.id || '');
-    if (!providerId) return null;
-
-    const providerName = sanitizeString(provider.name, 200) || 'Prestador';
-    const document = normalizeDocument(provider.cpf);
-    const base = {
-      resident: providerName,
-      resident_name: providerName,
-      provider_id: providerId,
-      resolved_user_id: hardwareIdFor(providerId),
-      visitor_action: 'provider',
-    };
-
-    if (isBlockedVisitor({ document, name: providerName })) {
-      return { ...base, allow: false, reason: 'Pessoa bloqueada', source: 'db', visitor_action: 'blocked' };
-    }
-
-    // Já está dentro: a leitura seguinte registra a saída (ou apenas confirma a
-    // entrada, quando o portão acabou de ser liberado).
-    const active = db.prepare(`SELECT * FROM access_entries
-      WHERE provider_resident_id = ? AND exit_time IS NULL
-      ORDER BY entry_time DESC LIMIT 1`).get(providerId);
-
-    if (active) {
-      const nowMs = Date.now();
-      const entryAge = active.entry_time ? nowMs - new Date(active.entry_time).getTime() : Number.POSITIVE_INFINITY;
-      const scanAge = active.entry_scan_at ? nowMs - new Date(active.entry_scan_at).getTime() : null;
-
-      if (scanAge !== null && scanAge < FACIAL_SCAN_DEBOUNCE_MS) {
-        return { ...base, allow: true, reason: 'Entrada em andamento', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
-      }
-
-      if (!active.entry_scan_at && entryAge < FACIAL_GRACE_MS) {
-        const ts = now();
-        db.prepare('UPDATE access_entries SET entry_scan_at = ? WHERE id = ?').run(ts, active.id);
-        const updated = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(active.id);
-        notifyRealtime('access_entries', 'UPDATE',
-          { ...updated, auto_recognized: !!updated.auto_recognized },
-          { ...active, auto_recognized: !!active.auto_recognized });
-        return { ...base, allow: true, reason: 'Entrada confirmada', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
-      }
-
-      return { ...base, allow: true, reason: 'Saída registrada', source: 'db', visitor_action: 'exit', visitor_entry_id: active.id };
-    }
-
-    const subjectKey = `provider:${providerId}`;
-    const ts = now();
-    const pending = db.prepare(`SELECT * FROM facial_release_requests
-      WHERE subject_key = ? AND status = 'pending'
-      ORDER BY requested_at DESC LIMIT 1`).get(subjectKey);
-
-    if (pending) {
-      const pendingAge = Date.now() - new Date(pending.requested_at).getTime();
-      if (pendingAge <= FACIAL_REQUEST_TTL_MS) {
-        db.prepare('UPDATE facial_release_requests SET requested_at = ?, match_distance = ?, match_source = ? WHERE id = ?')
-          .run(ts, provider.matchDistance ?? null, provider.source || 'face', pending.id);
-        return { ...base, allow: false, reason: 'Aguardando confirmação da portaria', source: 'db', visitor_action: 'pending', release_request_id: pending.id };
-      }
-      db.prepare("UPDATE facial_release_requests SET status = 'expired', resolved_at = ? WHERE id = ?").run(ts, pending.id);
-    }
-
-    const denied = db.prepare(`SELECT * FROM facial_release_requests
-      WHERE subject_key = ? AND status = 'denied'
-      ORDER BY resolved_at DESC LIMIT 1`).get(subjectKey);
-    if (denied?.resolved_at && (Date.now() - new Date(denied.resolved_at).getTime()) < FACIAL_DENY_COOLDOWN_MS) {
-      return { ...base, allow: false, reason: 'Liberação negada recentemente', source: 'db', visitor_action: 'denied' };
-    }
-
-    // O destino ainda não é conhecido: a portaria escolhe o morador/apartamento
-    // ao confirmar. Por isso o pedido nasce sem apartamento.
-    const requestId = genId();
-    db.prepare(`INSERT INTO facial_release_requests (
-        id, device_id, subject_key, visitor_name, visitor_document, visitor_type,
-        apartment, resident_id, resident_name, photo_url, photo_entry_id, company, vehicle_plate,
-        vehicle_model, vehicle_color, purpose, badge_number, match_source, match_distance,
-        status, requested_at, provider_resident_id
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      requestId,
-      deviceId || null,
-      subjectKey,
-      providerName,
-      document || '',
-      'service_provider',
-      '',
-      null,
-      null,
-      providerPhotoUrl(providerId),
-      null,
-      null,
-      null,
-      null,
-      null,
-      provider.apartment || null,
-      null,
-      provider.source || 'face',
-      provider.matchDistance ?? null,
-      'pending',
-      ts,
-      providerId,
-    );
-
-    const row = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
-    notifyRealtime('facial_release_requests', 'INSERT', row);
-    return { ...base, allow: false, reason: 'Aguardando confirmação da portaria', source: 'db', visitor_action: 'pending', release_request_id: requestId };
   }
 
   function closeVisitorEntry(entryId) {
@@ -1602,30 +1454,7 @@ export function registerControlidWebhook(app, ctx) {
             // Morador reconhecido só no servidor (frame RGB, sem prova de
             // vida) NÃO abre por padrão: mantém a decisão do iDFace existente.
             if (faceResult?.matched && faceResult.kind !== 'visitor') {
-              const faceResident = faceResult.residentId
-                ? db.prepare('SELECT id, name, apartment, person_type, cpf FROM residents WHERE id = ?').get(faceResult.residentId)
-                : null;
-              if ((faceResident?.person_type || 'morador') === 'prestador') {
-                // Prestador fixo reconhecido pelo servidor: mesma regra do
-                // leitor — a portaria confirma e informa o destino.
-                finalDecision = {
-                  allow: false,
-                  source: 'face',
-                  reason: 'Prestador aguardando confirmação da portaria',
-                  resident: faceResident.name,
-                  resident_name: faceResident.name,
-                  resident_id: faceResident.id,
-                  resolved_user_id: hardwareIdFor(faceResident.id),
-                  face_distance: faceResult.distance,
-                  provider_requires_approval: true,
-                  provider: {
-                    id: faceResident.id,
-                    name: faceResident.name,
-                    apartment: faceResident.apartment || '',
-                    cpf: faceResident.cpf || '',
-                  },
-                };
-              } else if (FACE_CENTRAL_RESIDENT_AUTO_OPEN) {
+              if (FACE_CENTRAL_RESIDENT_AUTO_OPEN) {
                 finalDecision = {
                   allow: true,
                   source: 'face',
@@ -1653,17 +1482,6 @@ export function registerControlidWebhook(app, ctx) {
           } else {
             console.warn('Face identification: endereço do dispositivo não encontrado', effectiveDeviceId);
           }
-        }
-
-        // Prestador de serviço fixo: aplica a confirmação da portaria (pedido
-        // pendente) ou registra a saída, sem abrir automaticamente.
-        if (finalDecision.provider_requires_approval && finalDecision.provider) {
-          const providerDecision = decideProviderAccess(effectiveDeviceId, {
-            ...finalDecision.provider,
-            source: finalDecision.source === 'face' ? 'face' : 'device',
-            matchDistance: finalDecision.face_distance ?? null,
-          });
-          if (providerDecision) finalDecision = providerDecision;
         }
 
         // A decisão do banco (ou do rosto) é autoritativa. Se o motor central não
