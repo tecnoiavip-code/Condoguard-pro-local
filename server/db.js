@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS access_entries (
   vehicle_plate TEXT,
   visitor_document TEXT NOT NULL,
   visitor_name TEXT NOT NULL,
-  visitor_type TEXT
+  visitor_type TEXT,
+  provider_resident_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -371,7 +372,8 @@ CREATE TABLE IF NOT EXISTS facial_release_requests (
   resolved_at TEXT,
   resolved_by TEXT,
   entry_id TEXT,
-  notes TEXT
+  notes TEXT,
+  provider_resident_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_facial_release_status
@@ -387,9 +389,11 @@ db.exec(SCHEMA);
 // visitantes, usada para diferenciar a primeira leitura (entrada) da saída.
 const accessEntryCols = new Set(db.prepare('PRAGMA table_info(access_entries)').all().map(c => c.name));
 if (!accessEntryCols.has('entry_scan_at')) db.exec('ALTER TABLE access_entries ADD COLUMN entry_scan_at TEXT');
+if (!accessEntryCols.has('provider_resident_id')) db.exec('ALTER TABLE access_entries ADD COLUMN provider_resident_id TEXT');
 
 const facialReleaseCols = new Set(db.prepare('PRAGMA table_info(facial_release_requests)').all().map(c => c.name));
 if (!facialReleaseCols.has('photo_entry_id')) db.exec('ALTER TABLE facial_release_requests ADD COLUMN photo_entry_id TEXT');
+if (!facialReleaseCols.has('provider_resident_id')) db.exec('ALTER TABLE facial_release_requests ADD COLUMN provider_resident_id TEXT');
 
 const residentCols = new Set(db.prepare('PRAGMA table_info(residents)').all().map(c => c.name));
 if (!residentCols.has('contract_type')) db.exec('ALTER TABLE residents ADD COLUMN contract_type TEXT');

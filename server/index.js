@@ -36,7 +36,7 @@ if (faceEngine) {
 // O webhook do Control iD precisa do corpo BRUTO (JSON ou form-encoded) e roda
 // sem autenticação (o dispositivo não conhece o token). Registrado antes do
 // express.json para capturar o stream.
-registerControlidWebhook(app, { db, now, genId, notifyRealtime, PHOTOS_DIR, faceEngine });
+const controlidWebhook = registerControlidWebhook(app, { db, now, genId, notifyRealtime, PHOTOS_DIR, faceEngine });
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -468,6 +468,20 @@ function fillDefaults(table, row) {
   return out;
 }
 
+// Sempre que o cadastro de dispositivos muda (ativar/desativar), o webhook
+// precisa ver a alteração imediatamente. Ao desativar, as funções do motor
+// (reconhecimento, abertura remota, configuração e pedidos pendentes) são
+// suspensas para aquele leitor.
+function afterDevicesChanged(rows) {
+  controlidWebhook?.invalidateDeviceCaches?.();
+  for (const row of rows || []) {
+    if (!row) continue;
+    const inactive = row.is_active === 0 || row.is_active === '0' || row.is_active === false;
+    if (!inactive) continue;
+    controlidWebhook?.suspendDevice?.(row.serial_number || row.ip_address);
+  }
+}
+
 app.post('/api/table/:table', authMiddleware, (req, res) => {
   const { table } = req.params;
   if (!KNOWN_TABLES.has(table)) return res.status(400).json({ data: null, error: { message: `Unknown table: ${table}` } });
@@ -479,6 +493,7 @@ app.post('/api/table/:table', authMiddleware, (req, res) => {
     const inserted = db.prepare(`SELECT * FROM \`${table}\` WHERE id = ?`).get(row.id);
     notifyRealtime(table, 'INSERT', sanitizeRead(table, inserted));
     if (table === 'access_entries') scheduleFaceIndexRefresh();
+    if (table === 'devices') afterDevicesChanged([inserted]);
     res.status(201).json({ data: [sanitizeRead(table, inserted)], error: null });
   } catch (e) {
     res.status(400).json({ data: null, error: { message: e.message } });
@@ -503,6 +518,7 @@ app.patch('/api/table/:table', authMiddleware, (req, res) => {
     const mapped = updatedRows.map(r => sanitizeRead(table, r));
     mapped.forEach(r => notifyRealtime(table, 'UPDATE', r, oldRows.find(o => o.id === r.id) || null));
     if (table === 'access_entries') scheduleFaceIndexRefresh();
+    if (table === 'devices') afterDevicesChanged(mapped);
     res.json({ data: mapped, error: null });
   } catch (e) {
     res.status(400).json({ data: null, error: { message: e.message } });
@@ -520,6 +536,7 @@ app.delete('/api/table/:table', authMiddleware, (req, res) => {
     db.prepare(`DELETE FROM \`${table}\`${where}`).run(...params);
     oldRows.forEach(r => notifyRealtime(table, 'DELETE', null, sanitizeRead(table, r)));
     if (table === 'access_entries') scheduleFaceIndexRefresh();
+    if (table === 'devices') controlidWebhook?.invalidateDeviceCaches?.();
     res.json({ data: null, error: null });
   } catch (e) {
     res.status(400).json({ data: null, error: { message: e.message } });
@@ -560,6 +577,7 @@ app.post('/api/table/:table/upsert', authMiddleware, (req, res) => {
     }
   }
   if (table === 'access_entries') scheduleFaceIndexRefresh();
+  if (table === 'devices') afterDevicesChanged(inserted);
   const error = errors.length > 0 ? { message: errors.join('; ') } : null;
   res.status(error ? 400 : 200).json({ data: inserted.map(r => sanitizeRead(table, r)), error });
 });
@@ -831,6 +849,11 @@ app.post('/api/functions/controlid-webhook/push-config', authMiddleware, (req, r
   const { device_id, deviceId } = req.body || {};
   const targetDeviceId = device_id || deviceId;
   if (!targetDeviceId) return res.status(400).json({ data: { error: 'device_id é obrigatório' }, error: null });
+  const deviceRow = db.prepare('SELECT is_active FROM devices WHERE id = ? OR serial_number = ? OR ip_address = ? LIMIT 1')
+    .get(targetDeviceId, targetDeviceId, targetDeviceId);
+  if (deviceRow && (deviceRow.is_active === 0 || deviceRow.is_active === '0' || deviceRow.is_active === false)) {
+    return res.status(409).json({ data: { error: 'Dispositivo desativado: funções do motor suspensas.' }, error: null });
+  }
   const fullConfig = buildWebhookConfig(req, { facial: isFacialDevice(db, targetDeviceId) });
   db.prepare('INSERT INTO push_command_queue (id, command, created_at, device_id, status) VALUES (?,?,?,?,?)')
     .run(genId(), JSON.stringify({ verb: 'POST', endpoint: 'set_configuration', body: fullConfig, contentType: 'application/json' }), now(), targetDeviceId, 'pending');
@@ -848,8 +871,11 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
     if (name === 'device-frame') {
       const deviceId = body.device_id || body.deviceId;
       if (!deviceId) return res.status(400).json({ data: null, error: { message: 'device_id é obrigatório' } });
-      const row = db.prepare('SELECT ip_address FROM devices WHERE id = ? OR serial_number = ? OR ip_address = ? LIMIT 1')
+      const row = db.prepare('SELECT ip_address, is_active FROM devices WHERE id = ? OR serial_number = ? OR ip_address = ? LIMIT 1')
         .get(deviceId, deviceId, deviceId);
+      if (row && (row.is_active === 0 || row.is_active === '0' || row.is_active === false)) {
+        return res.status(409).json({ data: null, error: { message: 'Dispositivo desativado: funções do motor suspensas.' } });
+      }
       const address = row?.ip_address;
       if (!address) return res.status(404).json({ data: null, error: { message: 'Dispositivo não encontrado ou sem IP cadastrado.' } });
       const frame = await getDeviceFrame(address);
@@ -921,7 +947,7 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
 
       const resolvePhotoUrl = (value) => {
         if (!value) return null;
-        if (String(value).startsWith('data:') || /^https?:/i.test(String(value))) return value;
+        if (String(value).startsWith('data:') || String(value).startsWith('/api/') || /^https?:/i.test(String(value))) return value;
         return `/api/storage/file?bucket=entry-photos&path=${encodeURIComponent(String(value))}&v=${Date.now()}`;
       };
 
@@ -969,7 +995,19 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
 
         // O cadastro pode já estar dentro (outra aprovação/entrada manual).
         // Não criar uma segunda entrada ativa para a mesma pessoa.
-        if (request.visitor_document) {
+        if (request.provider_resident_id) {
+          const activeEntry = db.prepare(`SELECT id, visitor_name, apartment FROM access_entries
+            WHERE provider_resident_id = ?
+              AND exit_time IS NULL
+            LIMIT 1`).get(request.provider_resident_id);
+          if (activeEntry) {
+            return res.status(409).json({
+              error: {
+                message: `${activeEntry.visitor_name} já possui uma entrada ativa (${activeEntry.apartment}). Registre a saída antes de uma nova entrada.`,
+              },
+            });
+          }
+        } else if (request.visitor_document) {
           const activeEntry = db.prepare(`SELECT id, visitor_name, apartment FROM access_entries
             WHERE visitor_type IN ('visitor', 'service_provider', 'delivery')
               AND lower(visitor_document) = lower(?)
@@ -1043,8 +1081,9 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
           db.prepare(`INSERT INTO access_entries (
             id, apartment, auto_recognized, badge_number, company, entry_time, entry_scan_at, exit_time,
             notes, photo_url, purpose, registered_by, resident_id, resident_name,
-            vehicle_color, vehicle_model, vehicle_plate, visitor_document, visitor_name, visitor_type
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+            vehicle_color, vehicle_model, vehicle_plate, visitor_document, visitor_name, visitor_type,
+            provider_resident_id
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
             entryId,
             apartment,
             1,
@@ -1053,7 +1092,9 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
             ts,
             null,
             null,
-            'Liberação facial autorizada pela portaria',
+            request.provider_resident_id
+              ? 'Prestador de serviço confirmado pela portaria'
+              : 'Liberação facial autorizada pela portaria',
             request.photo_url || null,
             request.purpose || null,
             'reconhecimento_facial',
@@ -1065,6 +1106,7 @@ app.post('/api/functions/:name', authMiddleware, async (req, res) => {
             request.visitor_document || '',
             request.visitor_name,
             request.visitor_type || 'visitor',
+            request.provider_resident_id || null,
           );
 
           db.prepare(`UPDATE facial_release_requests

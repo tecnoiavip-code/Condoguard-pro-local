@@ -513,16 +513,16 @@ describe('integração do backend local', () => {
     expect((await res.json()).session_is_valid).toBe(true);
   });
 
-  it('prestador/doméstico reconhecido entra no log de acesso como registro concluído', async () => {
+  it('doméstico reconhecido entra automaticamente no log de acesso', async () => {
     await api('/api/table/residents', {
       method: 'POST',
-      body: JSON.stringify({ row: { id: 'it_colab_1', name: 'Prestador Fixo', apartment: '801', person_type: 'prestador' } }),
+      body: JSON.stringify({ row: { id: 'it_colab_1', name: 'Domestico Fixo', apartment: '801', person_type: 'empregado' } }),
     });
 
     const res = await fetch(`${base}/api/controlid-webhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ event: 1, user_id: 900, user_name: '801 - Prestador Fixo', portal_id: 1, device_id: 'cid-dec-1' }),
+      body: JSON.stringify({ event: 1, user_id: 900, user_name: '801 - Domestico Fixo', portal_id: 1, device_id: 'cid-dec-1' }),
     });
     expect((await res.json()).event).toBe(7);
 
@@ -531,11 +531,158 @@ describe('integração do backend local', () => {
     expect(rows.data).toHaveLength(1);
     const entry = rows.data[0];
     expect(entry.visitor_type).toBe('service_provider');
-    expect(entry.visitor_name).toBe('Prestador Fixo');
+    expect(entry.visitor_name).toBe('Domestico Fixo');
     expect(entry.apartment).toBe('801');
     expect(entry.entry_time).toBeTruthy();
     expect(entry.exit_time).toBe(entry.entry_time);
     expect(entry.auto_recognized).toBe(true);
+  });
+
+  it('prestador reconhecido exige confirmação da portaria e endereço de destino', async () => {
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_prest_1', name: 'Prestador Confirmacao', apartment: '901', person_type: 'prestador' } }),
+    });
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_dest_1', name: 'Morador Destino', apartment: '902', person_type: 'morador' } }),
+    });
+
+    // O leitor identificou o prestador: o portão NÃO abre sozinho.
+    const res = await fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 7,
+        user_id: hardwareIdFor('it_prest_1'),
+        user_name: '901 - Prestador Confirmacao',
+        portal_id: 1,
+        device_id: 'cid-dec-2',
+      }),
+    });
+    expect((await res.json()).event).toBe(6);
+
+    const requests = await api('/api/table/facial_release_requests?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'provider_resident_id', op: 'eq', value: 'it_prest_1' }])));
+    expect(requests.error).toBeNull();
+    expect(requests.data).toHaveLength(1);
+    const request = requests.data[0];
+    expect(request.status).toBe('pending');
+    expect(request.visitor_type).toBe('service_provider');
+    expect(request.visitor_name).toBe('Prestador Confirmacao');
+    expect(request.apartment).toBe('');
+
+    // Sem escolher o destino a portaria não consegue liberar.
+    const semDestino = await fetch(`${base}/api/functions/facial-release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'approve', request_id: request.id }),
+    });
+    expect(semDestino.status).toBe(400);
+
+    const approve = await fetch(`${base}/api/functions/facial-release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'approve', request_id: request.id, resident_id: 'it_dest_1' }),
+    });
+    expect(approve.status).toBe(200);
+    expect((await approve.json()).ok).toBe(true);
+
+    const entries = await api('/api/table/access_entries?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'provider_resident_id', op: 'eq', value: 'it_prest_1' }])));
+    expect(entries.data).toHaveLength(1);
+    const entry = entries.data[0];
+    expect(entry.apartment).toBe('902');
+    expect(entry.resident_id).toBe('it_dest_1');
+    expect(entry.resident_name).toBe('Morador Destino');
+    expect(entry.visitor_name).toBe('Prestador Confirmacao');
+    expect(entry.visitor_type).toBe('service_provider');
+    expect(entry.exit_time).toBeNull();
+  });
+
+  it('desativar o dispositivo suspende o motor imediatamente', async () => {
+    const deviceId = 'cid-off-1';
+    await api('/api/table/devices', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_dev_off',
+          name: 'Leitor Teste',
+          type: 'facial_recognition',
+          location: 'Teste',
+          status: 'online',
+          ip_address: '127.0.0.10',
+          serial_number: deviceId,
+          is_active: true,
+        },
+      }),
+    });
+    await api('/api/table/residents', {
+      method: 'POST',
+      body: JSON.stringify({ row: { id: 'it_morador_off', name: 'Morador Ativo Off', apartment: '903', person_type: 'morador' } }),
+    });
+
+    const identify = () => fetch(`${base}/api/controlid-webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: 7,
+        user_id: hardwareIdFor('it_morador_off'),
+        user_name: '903 - Morador Ativo Off',
+        portal_id: 1,
+        device_id: deviceId,
+      }),
+    });
+
+    expect((await (await identify()).json()).event).toBe(7);
+
+    await api('/api/table/facial_release_requests', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_fr_off',
+          subject_key: 'doc:OFF',
+          visitor_name: 'Visitante Off',
+          visitor_type: 'visitor',
+          status: 'pending',
+          requested_at: new Date().toISOString(),
+          device_id: deviceId,
+        },
+      }),
+    });
+    await api('/api/table/push_command_queue', {
+      method: 'POST',
+      body: JSON.stringify({
+        row: {
+          id: 'it_push_off',
+          command: { verb: 'POST', endpoint: 'execute_actions', body: {} },
+          created_at: new Date().toISOString(),
+          device_id: deviceId,
+          status: 'pending',
+        },
+      }),
+    });
+
+    const off = await api('/api/table/devices', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        set: { is_active: false },
+        filters: [{ col: 'id', op: 'eq', value: 'it_dev_off' }],
+      }),
+    });
+    expect(off.error).toBeNull();
+
+    // Cache invalidado na hora: a próxima identificação é negada.
+    expect((await (await identify()).json()).event).toBe(6);
+
+    // Comandos (abertura remota/config) não são entregues ao leitor desativado.
+    const push = await fetch(`${base}/api/controlid-webhook?deviceId=${deviceId}`);
+    expect(push.status).toBe(200);
+    expect((await push.text()).trim()).toBe('');
+
+    const fr = await api('/api/table/facial_release_requests?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'id', op: 'eq', value: 'it_fr_off' }])));
+    expect(fr.data[0].status).toBe('expired');
+
+    const cmd = await api('/api/table/push_command_queue?select=*&filters=' + encodeURIComponent(JSON.stringify([{ col: 'id', op: 'eq', value: 'it_push_off' }])));
+    expect(cmd.data[0].status).toBe('error');
   });
 
   it('morador reconhecido NÃO gera registro no log de acesso', async () => {

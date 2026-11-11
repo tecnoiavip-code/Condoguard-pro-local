@@ -176,11 +176,23 @@ export const Devices = () => {
   const toggleActive = async (id: string) => {
     const device = devices.find(d => d.id === id);
     if (!device) return;
-    await saveDevice({
+    const willDeactivate = device.isActive !== false;
+    if (willDeactivate && !confirm(
+      `Desativar "${device.name}"?\n\n` +
+      'Com o dispositivo desativado, as funções do motor do PortalGuard ficam suspensas: ' +
+      'as identificações são negadas, as liberações remotas e sincronizações não são enviadas ' +
+      'e os pedidos de liberação pendentes desse leitor são cancelados.',
+    )) return;
+    const saved = await saveDevice({
       ...device,
-      isActive: device.isActive === false,
+      isActive: !willDeactivate,
       lastSync: new Date().toISOString(),
     });
+    if (saved) {
+      toast.success(willDeactivate
+        ? 'Dispositivo desativado — funções do motor suspensas'
+        : 'Dispositivo ativado');
+    }
   };
 
   const resetForm = () => {
@@ -407,6 +419,11 @@ export const Devices = () => {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
+                {device.isActive === false && (
+                  <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                    Motor do PortalGuard suspenso: identificações negadas, sem abertura remota nem sincronização.
+                  </p>
+                )}
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Localização:</span>

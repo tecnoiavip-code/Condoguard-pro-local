@@ -325,7 +325,7 @@ const findResidentByDeviceUserId = (db, deviceUserId) => {
   if (!uid) return null;
   try {
     const rows = db.prepare(
-      'SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents',
+      'SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag, cpf, photo_url FROM residents',
     ).all();
     return rows.find((row) => hardwareIdFor(row.id) === uid) || null;
   } catch {
@@ -403,7 +403,7 @@ const evaluateCentralAccess = async (db, payload) => {
       const candidates = Array.from(new Set([cleanCardValue, cardValue].filter(Boolean)));
       const placeholders = candidates.map(() => '?').join(',');
       resident = db.prepare(
-        `SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag FROM residents WHERE vehicle_tag IN (${placeholders}) LIMIT 1`
+        `SELECT id, name, apartment, contract_type, contract_end_date, person_type, vehicle_tag, cpf, photo_url FROM residents WHERE vehicle_tag IN (${placeholders}) LIMIT 1`
       ).get(...candidates) || null;
     }
 
@@ -417,7 +417,7 @@ const evaluateCentralAccess = async (db, payload) => {
       const { apartment: apt, name: rawName } = splitDeviceUserName(userName);
       if (apt && rawName) {
         const rows = db.prepare(
-          'SELECT id, name, apartment, contract_type, contract_end_date, person_type FROM residents WHERE apartment LIKE ?'
+          'SELECT id, name, apartment, contract_type, contract_end_date, person_type, cpf, photo_url FROM residents WHERE apartment LIKE ?'
         ).all(`%${apt}%`);
         const target = normalizeName(rawName);
         // Antes de aceitar qualquer morador por semelhança de nome, verifica se
@@ -465,6 +465,23 @@ const evaluateCentralAccess = async (db, payload) => {
         if (resident.contract_end_date < today) {
           return { ...found, allow: false, reason: 'Contrato vencido' };
         }
+      }
+      // Prestador de serviço fixo: NÃO abre sozinho. A portaria confirma o
+      // acesso e escolhe o endereço (morador/apartamento) de destino antes de
+      // acionar o portão. Domésticos (empregado) seguem automáticos.
+      if ((resident.person_type || 'morador') === 'prestador') {
+        return {
+          ...found,
+          allow: false,
+          reason: 'Prestador aguardando confirmação da portaria',
+          provider_requires_approval: true,
+          provider: {
+            id: resident.id,
+            name: resident.name,
+            apartment: resident.apartment || '',
+            cpf: resident.cpf || '',
+          },
+        };
       }
       if (resident.person_type && resident.person_type !== 'morador') {
         return { ...found, reason: 'Acesso autorizado - colaborador ativo' };
@@ -680,7 +697,10 @@ export function registerControlidWebhook(app, ctx) {
       const resident = db.prepare('SELECT id, name, apartment, person_type FROM residents WHERE id = ?').get(residentId);
       if (!resident) return;
       const personType = String(resident.person_type || 'morador');
-      if (personType === 'morador') return;
+      // Prestador de serviço fixo não é mais auto-liberado; o acesso dele é
+      // registrado pela confirmação da portaria (facial-release). Aqui ficam
+      // apenas os domésticos, que continuam entrando automaticamente.
+      if (personType !== 'empregado') return;
 
       const ts = now();
       const name = resident.name || '';
@@ -849,6 +869,128 @@ export function registerControlidWebhook(app, ctx) {
     return { ...base, allow: false, reason: 'Aguardando liberação da portaria', source: 'db', visitor_action: 'pending', release_request_id: requestId };
   }
 
+  // Prestador de serviço fixo reconhecido pelo rosto (ou pelo próprio leitor).
+  // Diferente do doméstico, NÃO abre automaticamente: gera um pedido para a
+  // portaria confirmar o acesso e escolher o endereço de destino. A saída é
+  // registrada normalmente, sem nova confirmação.
+  function providerPhotoUrl(providerId) {
+    try {
+      const dir = path.join(PHOTOS_DIR, 'resident-photos', String(providerId));
+      const file = ['photo.jpg', 'photo.jpeg', 'photo.png'].find((name) => fs.existsSync(path.join(dir, name)));
+      if (!file) return null;
+      return `/api/storage/file?bucket=resident-photos&path=${encodeURIComponent(`${providerId}/${file}`)}`;
+    } catch {
+      return null;
+    }
+  }
+
+  function decideProviderAccess(deviceId, provider) {
+    const providerId = String(provider?.id || '');
+    if (!providerId) return null;
+
+    const providerName = sanitizeString(provider.name, 200) || 'Prestador';
+    const document = normalizeDocument(provider.cpf);
+    const base = {
+      resident: providerName,
+      resident_name: providerName,
+      provider_id: providerId,
+      resolved_user_id: hardwareIdFor(providerId),
+      visitor_action: 'provider',
+    };
+
+    if (isBlockedVisitor({ document, name: providerName })) {
+      return { ...base, allow: false, reason: 'Pessoa bloqueada', source: 'db', visitor_action: 'blocked' };
+    }
+
+    // Já está dentro: a leitura seguinte registra a saída (ou apenas confirma a
+    // entrada, quando o portão acabou de ser liberado).
+    const active = db.prepare(`SELECT * FROM access_entries
+      WHERE provider_resident_id = ? AND exit_time IS NULL
+      ORDER BY entry_time DESC LIMIT 1`).get(providerId);
+
+    if (active) {
+      const nowMs = Date.now();
+      const entryAge = active.entry_time ? nowMs - new Date(active.entry_time).getTime() : Number.POSITIVE_INFINITY;
+      const scanAge = active.entry_scan_at ? nowMs - new Date(active.entry_scan_at).getTime() : null;
+
+      if (scanAge !== null && scanAge < FACIAL_SCAN_DEBOUNCE_MS) {
+        return { ...base, allow: true, reason: 'Entrada em andamento', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
+      }
+
+      if (!active.entry_scan_at && entryAge < FACIAL_GRACE_MS) {
+        const ts = now();
+        db.prepare('UPDATE access_entries SET entry_scan_at = ? WHERE id = ?').run(ts, active.id);
+        const updated = db.prepare('SELECT * FROM access_entries WHERE id = ?').get(active.id);
+        notifyRealtime('access_entries', 'UPDATE',
+          { ...updated, auto_recognized: !!updated.auto_recognized },
+          { ...active, auto_recognized: !!active.auto_recognized });
+        return { ...base, allow: true, reason: 'Entrada confirmada', source: 'db', visitor_action: 'entry', visitor_entry_id: active.id };
+      }
+
+      return { ...base, allow: true, reason: 'Saída registrada', source: 'db', visitor_action: 'exit', visitor_entry_id: active.id };
+    }
+
+    const subjectKey = `provider:${providerId}`;
+    const ts = now();
+    const pending = db.prepare(`SELECT * FROM facial_release_requests
+      WHERE subject_key = ? AND status = 'pending'
+      ORDER BY requested_at DESC LIMIT 1`).get(subjectKey);
+
+    if (pending) {
+      const pendingAge = Date.now() - new Date(pending.requested_at).getTime();
+      if (pendingAge <= FACIAL_REQUEST_TTL_MS) {
+        db.prepare('UPDATE facial_release_requests SET requested_at = ?, match_distance = ?, match_source = ? WHERE id = ?')
+          .run(ts, provider.matchDistance ?? null, provider.source || 'face', pending.id);
+        return { ...base, allow: false, reason: 'Aguardando confirmação da portaria', source: 'db', visitor_action: 'pending', release_request_id: pending.id };
+      }
+      db.prepare("UPDATE facial_release_requests SET status = 'expired', resolved_at = ? WHERE id = ?").run(ts, pending.id);
+    }
+
+    const denied = db.prepare(`SELECT * FROM facial_release_requests
+      WHERE subject_key = ? AND status = 'denied'
+      ORDER BY resolved_at DESC LIMIT 1`).get(subjectKey);
+    if (denied?.resolved_at && (Date.now() - new Date(denied.resolved_at).getTime()) < FACIAL_DENY_COOLDOWN_MS) {
+      return { ...base, allow: false, reason: 'Liberação negada recentemente', source: 'db', visitor_action: 'denied' };
+    }
+
+    // O destino ainda não é conhecido: a portaria escolhe o morador/apartamento
+    // ao confirmar. Por isso o pedido nasce sem apartamento.
+    const requestId = genId();
+    db.prepare(`INSERT INTO facial_release_requests (
+        id, device_id, subject_key, visitor_name, visitor_document, visitor_type,
+        apartment, resident_id, resident_name, photo_url, photo_entry_id, company, vehicle_plate,
+        vehicle_model, vehicle_color, purpose, badge_number, match_source, match_distance,
+        status, requested_at, provider_resident_id
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      requestId,
+      deviceId || null,
+      subjectKey,
+      providerName,
+      document || '',
+      'service_provider',
+      '',
+      null,
+      null,
+      providerPhotoUrl(providerId),
+      null,
+      null,
+      null,
+      null,
+      null,
+      provider.apartment || null,
+      null,
+      provider.source || 'face',
+      provider.matchDistance ?? null,
+      'pending',
+      ts,
+      providerId,
+    );
+
+    const row = db.prepare('SELECT * FROM facial_release_requests WHERE id = ?').get(requestId);
+    notifyRealtime('facial_release_requests', 'INSERT', row);
+    return { ...base, allow: false, reason: 'Aguardando confirmação da portaria', source: 'db', visitor_action: 'pending', release_request_id: requestId };
+  }
+
   function closeVisitorEntry(entryId) {
     if (!entryId) return;
     try {
@@ -938,11 +1080,14 @@ export function registerControlidWebhook(app, ctx) {
 
   const deviceTypeCache = new Map();
   const deviceActiveCache = new Map();
+  const deviceActiveCheckedAt = new Map();
   const lastDeviceStatusWriteMap = new Map();
   const deviceRowIdCache = new Map();
   const lastConfigRefreshCheckMap = new Map();
   const lastStaleSweepMap = new Map();
   const emptyQueueUntilMap = new Map();
+
+  const DEVICE_ACTIVE_CACHE_MS = 5000;
 
   const CONFIG_REFRESH_CHECK_INTERVAL_MS = 600000;
   const CONFIG_REFRESH_INTERVAL_MS = 1800000;
@@ -952,11 +1097,15 @@ export function registerControlidWebhook(app, ctx) {
 
   function isDeviceActive(deviceId) {
     if (!deviceId) return true;
-    if (deviceActiveCache.has(deviceId)) return deviceActiveCache.get(deviceId) !== false;
+    const checkedAt = deviceActiveCheckedAt.get(deviceId) || 0;
+    if (deviceActiveCache.has(deviceId) && (Date.now() - checkedAt) < DEVICE_ACTIVE_CACHE_MS) {
+      return deviceActiveCache.get(deviceId) !== false;
+    }
     try {
       const row = db.prepare('SELECT is_active FROM devices WHERE serial_number = ? OR ip_address = ? LIMIT 1').get(deviceId, deviceId);
       const active = !(row?.is_active === 0 || row?.is_active === '0' || row?.is_active === false);
       deviceActiveCache.set(deviceId, active);
+      deviceActiveCheckedAt.set(deviceId, Date.now());
       return active;
     } catch (e) {
       return true;
@@ -978,6 +1127,7 @@ export function registerControlidWebhook(app, ctx) {
       db.prepare("UPDATE devices SET last_sync = ?, status = 'online' WHERE id = ?").run(now(), rowId);
       const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(rowId);
       deviceActiveCache.set(deviceId, !(updated?.is_active === 0 || updated?.is_active === '0' || updated?.is_active === false));
+      deviceActiveCheckedAt.set(deviceId, Date.now());
       notifyRealtime('devices', 'UPDATE', updated);
     }
   }
@@ -1080,6 +1230,14 @@ export function registerControlidWebhook(app, ctx) {
 
       // ===== PUSH MODE: dispositivo faz polling de comandos =====
       if (eventType === 'push_request' && (req.method === 'GET' || req.method === 'POST')) {
+        // Dispositivo desativado na tela: o motor fica suspenso. Não entrega
+        // comandos (abertura remota, configuração, fotos) nem aceita resultado.
+        if (deviceId && !isDeviceActive(deviceId)) {
+          console.log('Device disabled, suspending push commands:', deviceId);
+          res.set(corsHeaders).status(200).end('');
+          return;
+        }
+
         if (deviceId) {
           runBackground('updateDeviceStatus', (async () => { updateDeviceStatus(deviceId); })());
         }
@@ -1225,6 +1383,11 @@ export function registerControlidWebhook(app, ctx) {
 
         if (!targetIp) {
           res.set(corsHeaders).status(400).json({ error: 'device_ip is required' });
+          return;
+        }
+
+        if (!isDeviceActive(targetSerial || targetIp)) {
+          res.set(corsHeaders).status(409).json({ error: 'Dispositivo desativado no PortalGuard: funções do motor suspensas' });
           return;
         }
 
@@ -1439,7 +1602,30 @@ export function registerControlidWebhook(app, ctx) {
             // Morador reconhecido só no servidor (frame RGB, sem prova de
             // vida) NÃO abre por padrão: mantém a decisão do iDFace existente.
             if (faceResult?.matched && faceResult.kind !== 'visitor') {
-              if (FACE_CENTRAL_RESIDENT_AUTO_OPEN) {
+              const faceResident = faceResult.residentId
+                ? db.prepare('SELECT id, name, apartment, person_type, cpf FROM residents WHERE id = ?').get(faceResult.residentId)
+                : null;
+              if ((faceResident?.person_type || 'morador') === 'prestador') {
+                // Prestador fixo reconhecido pelo servidor: mesma regra do
+                // leitor — a portaria confirma e informa o destino.
+                finalDecision = {
+                  allow: false,
+                  source: 'face',
+                  reason: 'Prestador aguardando confirmação da portaria',
+                  resident: faceResident.name,
+                  resident_name: faceResident.name,
+                  resident_id: faceResident.id,
+                  resolved_user_id: hardwareIdFor(faceResident.id),
+                  face_distance: faceResult.distance,
+                  provider_requires_approval: true,
+                  provider: {
+                    id: faceResident.id,
+                    name: faceResident.name,
+                    apartment: faceResident.apartment || '',
+                    cpf: faceResident.cpf || '',
+                  },
+                };
+              } else if (FACE_CENTRAL_RESIDENT_AUTO_OPEN) {
                 finalDecision = {
                   allow: true,
                   source: 'face',
@@ -1467,6 +1653,17 @@ export function registerControlidWebhook(app, ctx) {
           } else {
             console.warn('Face identification: endereço do dispositivo não encontrado', effectiveDeviceId);
           }
+        }
+
+        // Prestador de serviço fixo: aplica a confirmação da portaria (pedido
+        // pendente) ou registra a saída, sem abrir automaticamente.
+        if (finalDecision.provider_requires_approval && finalDecision.provider) {
+          const providerDecision = decideProviderAccess(effectiveDeviceId, {
+            ...finalDecision.provider,
+            source: finalDecision.source === 'face' ? 'face' : 'device',
+            matchDistance: finalDecision.face_distance ?? null,
+          });
+          if (providerDecision) finalDecision = providerDecision;
         }
 
         // A decisão do banco (ou do rosto) é autoritativa. Se o motor central não
@@ -1632,6 +1829,36 @@ export function registerControlidWebhook(app, ctx) {
     }
   }
 
+  // Chamado pelo servidor quando a tela de Dispositivos altera o cadastro:
+  // invalida o cache e, ao desativar, suspende de imediato as funções do motor
+  // (identificação, abertura remota e pedidos pendentes) daquele dispositivo.
+  function invalidateDeviceCaches(deviceId) {
+    if (deviceId) {
+      deviceActiveCache.delete(deviceId);
+      deviceActiveCheckedAt.delete(deviceId);
+    } else {
+      deviceActiveCache.clear();
+      deviceActiveCheckedAt.clear();
+    }
+    emptyQueueUntilMap.clear();
+  }
+
+  function suspendDevice(deviceId) {
+    if (!deviceId) return;
+    invalidateDeviceCaches(deviceId);
+    try {
+      const ts = now();
+      db.prepare(`UPDATE facial_release_requests SET status = 'expired', resolved_at = ?
+        WHERE status = 'pending' AND device_id = ?`).run(ts, deviceId);
+      db.prepare(`UPDATE push_command_queue SET status = 'error', result = ?
+        WHERE device_id = ? AND status = 'pending'`).run(JSON.stringify({ error: 'device_disabled' }), deviceId);
+    } catch (e) {
+      console.error('suspendDevice error:', e);
+    }
+  }
+
   app.all('/api/controlid-webhook', handler);
   app.all('/api/controlid-webhook/*', handler);
+
+  return { invalidateDeviceCaches, suspendDevice, isDeviceActive };
 }

@@ -146,6 +146,8 @@ export const FacialReleaseModal = () => {
     setDismissed((prev) => new Set(prev).add(pending.id));
   };
 
+  const isProvider = pending?.visitor_type === 'service_provider';
+
   return (
     <Dialog open={!!pending} onOpenChange={(open) => { if (!open) dismiss(); }}>
       <DialogContent className="max-w-md">
@@ -155,7 +157,9 @@ export const FacialReleaseModal = () => {
             Liberação de acesso facial
           </DialogTitle>
           <DialogDescription>
-            Cadastro do Novo Cadastro reconhecido na volta ao condomínio.
+            {isProvider
+              ? 'Prestador de serviço reconhecido. Confirme o acesso e o endereço de destino antes de liberar o portão.'
+              : 'Cadastro do Novo Cadastro reconhecido na volta ao condomínio.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -186,7 +190,9 @@ export const FacialReleaseModal = () => {
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
                   <Building2 className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium">Apartamento / morador desta entrada</span>
+                  <span className="font-medium">
+                    {isProvider ? 'Endereço de destino (morador / apartamento)' : 'Apartamento / morador desta entrada'}
+                  </span>
                 </div>
                 <Combobox
                   options={residents.map((resident) => ({
@@ -227,7 +233,9 @@ export const FacialReleaseModal = () => {
             </div>
 
             <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
-              A liberação vale para <strong>uma entrada e uma saída</strong>. O cadastro e a face permanecem no sistema/leitor.
+              {isProvider
+                ? 'O portão só abre depois desta confirmação. O endereço escolhido fica registrado na entrada do prestador.'
+                : 'A liberação vale para uma entrada e uma saída. O cadastro e a face permanecem no sistema/leitor.'}
             </p>
           </div>
         )}
